@@ -10,8 +10,8 @@ services:
     command: >
       -n
       --listening-port=3478
-      --min-port=49160
-      --max-port=49200
+      --min-port=51000
+      --max-port=51040
       --realm=${TURN_DOMAIN:-localhost}
       --use-auth-secret
       --static-auth-secret=${TURN_SECRET:?Set TURN_SECRET in .env (e.g. openssl rand -hex 32) — must match the backend's TURN_SECRET}
@@ -19,7 +19,11 @@ services:
     ports:
       - "3478:3478"
       - "3478:3478/udp"
-      - "49160-49200:49160-49200/udp"
+      # 49160-49200 sits inside a Windows-reserved (Hyper-V/WSL2) dynamic port exclusion
+      # range on this host, so every bind in it fails with an access-denied error — moved to
+      # a range Windows isn't hoarding. `netsh interface ipv4 show excludedportrange
+      # protocol=udp` shows the current reserved blocks if this ever needs to move again.
+      - "51000-51040:51000-51040/udp"
     healthcheck:
       # coturn/coturn doesn't ship `nc` — use bash's /dev/tcp instead of relying on netcat.
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/3478' || exit 1"]
@@ -94,12 +98,22 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./storage:/storage
+    healthcheck:
+      # No curl/wget in this python:3.11-slim image — urllib is stdlib, no extra install.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   frontend:
     build: ./frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      # Without waiting for backend's own healthcheck, frontend can start serving requests
+      # (its own startup is near-instant) before backend has finished initializing, so its
+      # first proxied /api/v1/* call fails with ECONNREFUSED until backend catches up.
+      backend:
+        condition: service_healthy
     environment:
       # Relative, not absolute — the browser only ever talks to this container's own
       # origin (:3000); next.config.ts's rewrites() then proxies /api/v1 and /media
