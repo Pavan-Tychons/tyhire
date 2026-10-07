@@ -168,7 +168,7 @@ def score_candidate(
     for category in CATEGORIES:
         entry = result.get(f"{category}_score") or {"score": 50, "reasons": []}
         score = float(entry["score"])
-        reasons = list(entry.get("reasons", []))
+        reasons = list(entry.get("reasons") or [])
         breakdown[category] = {"score": score, "reasons": reasons}
         all_reasons.extend(f"[{category}] {r}" for r in reasons)
         weight = getattr(job, f"weight_{category}", None)

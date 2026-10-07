@@ -13,6 +13,13 @@ const nextConfig: NextConfig = {
       { source: "/media/:path*", destination: `${BACKEND_URL}/media/:path*` },
     ];
   },
+  experimental: {
+    // Next's dev-mode rewrite proxy kills any request still running after 30s (its own
+    // hardcoded default) and returns a bare 500 "Internal Server Error" — resume batches of
+    // 3+ real files easily exceed that (each takes ~10-12s: PDF extraction + an OpenAI call).
+    // Raised well above the slowest realistic batch rather than removing the cap entirely.
+    proxyTimeout: 300000,
+  },
 };
 
 export default nextConfig;
