@@ -7,7 +7,7 @@ import { BASE_URL, getJson, postForm, postJson } from "@/lib/api";
 import WebRTCRoom, { type WebRTCApi } from "@/components/WebRTCRoom";
 import LiveTranscriptFeed from "@/components/LiveTranscriptFeed";
 import { useLiveSpeech, type LiveTranscriptItem } from "@/lib/useLiveSpeech";
-import { exitFullscreen, isFullscreenActive, requestFullscreen } from "@/lib/fullscreen";
+import { exitFullscreen, isFullscreenActive, onFullscreenChange } from "@/lib/fullscreen";
 import type { FacialAffectAnalysis, InterviewSession, LiveSignalEvent, SignalType, VoiceToneAnalysis } from "@/lib/types";
 
 interface SentimentSample {
@@ -123,6 +123,7 @@ export default function InterviewerCapturePage() {
   const [micMuted, setMicMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [muteRequestSent, setMuteRequestSent] = useState(false);
+  const [isFullscreenOn, setIsFullscreenOn] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
   const [joined, setJoined] = useState(false);
   const [callStartTime, setCallStartTime] = useState<number>(Date.now());
@@ -367,6 +368,14 @@ export default function InterviewerCapturePage() {
     setCameraOff(webrtcApiRef.current?.toggleCamera() ?? false);
   }
 
+  function toggleFullscreen() {
+    setIsFullscreenOn(webrtcApiRef.current?.toggleFullscreen() ?? false);
+  }
+
+  // Keeps the button's label accurate if fullscreen is exited via Esc rather than the
+  // button itself — isFullscreenOn would otherwise stay stuck on "Exit Fullscreen".
+  useEffect(() => onFullscreenChange(() => setIsFullscreenOn(isFullscreenActive())), []);
+
   function requestMute() {
     webrtcApiRef.current?.requestPeerMute();
     setMuteRequestSent(true);
@@ -508,7 +517,10 @@ export default function InterviewerCapturePage() {
 
             <button
               onClick={() => {
-                requestFullscreen().catch(() => {});
+                // Deliberately NOT auto-fullscreening the whole page here — that swallowed
+                // the AI Questions/Transcript/Sentiment/Signals tabs and decision bar along
+                // with the video, with no way back short of Esc. WebRTCRoom's own fullscreen
+                // button now targets just the video+screenshare area instead.
                 setCallStartTime(Date.now());
                 setJoined(true);
                 startRecording();
@@ -653,6 +665,14 @@ export default function InterviewerCapturePage() {
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-50 border border-zinc-200 hover:bg-zinc-100 text-zinc-700 transition-all"
                 >
                   {muteRequestSent ? "✓ Request Sent" : "Ask Candidate to Mute"}
+                </button>
+                <button
+                  onClick={toggleFullscreen}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                    isFullscreenOn ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100"
+                  }`}
+                >
+                  {isFullscreenOn ? "⛶ Exit Fullscreen" : "⛶ Fullscreen"}
                 </button>
               </div>
 

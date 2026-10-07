@@ -6,12 +6,17 @@ import type { IceServer } from "@/lib/types";
 import { LiveKitRoom, RoomAudioRenderer, useTracks, VideoTrack } from "@livekit/components-react";
 import { Track, Room, RoomEvent } from "livekit-client";
 import EyeTrackingOverlay from "@/components/EyeTrackingOverlay";
+import { exitFullscreen, isFullscreenActive, requestFullscreen } from "@/lib/fullscreen";
 
 export interface WebRTCApi {
   /** Toggles the local mic; returns the new muted state. */
   toggleMic: () => boolean;
   /** Toggles the local camera; returns the new camera-off state. */
   toggleCamera: () => boolean;
+  /** Toggles fullscreen on just the call+screenshare box (not the whole page) — returns
+   * the new fullscreen state. The page's own controls (mute/decision panel/tabs) stay
+   * reachable by exiting fullscreen (this again, or Esc) rather than being hidden away. */
+  toggleFullscreen: () => boolean;
   /** Interviewer-only: asks the candidate's page to mute itself. */
   requestPeerMute: () => void;
   /** Tells the other participant's page the call is over from this end. */
@@ -338,6 +343,14 @@ export default function WebRTCRoom({
           track.enabled = !track.enabled;
           return !track.enabled;
         },
+        toggleFullscreen: () => {
+          if (isFullscreenActive()) {
+            exitFullscreen().catch(() => {});
+            return false;
+          }
+          if (containerRef.current) requestFullscreen(containerRef.current).catch(() => {});
+          return true;
+        },
         requestPeerMute: () => send({ type: "mute-request" }),
         notifyPeerEnded: () => send({ type: "call-ended" }),
       });
@@ -474,7 +487,7 @@ export default function WebRTCRoom({
 
   if (role === "interviewer") {
     return (
-      <div className="relative w-full h-full min-h-[380px] flex flex-col md:flex-row gap-3">
+      <div ref={containerRef} className="relative w-full h-full min-h-[380px] flex flex-col md:flex-row gap-3">
         <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
         {/* Candidate Screenshare Viewport (Always in DOM) */}
@@ -565,7 +578,7 @@ export default function WebRTCRoom({
   }
 
   return (
-    <div className="relative w-full h-full min-h-[360px] rounded-xl bg-black overflow-hidden border border-zinc-200">
+    <div ref={containerRef} className="relative w-full h-full min-h-[360px] rounded-xl bg-black overflow-hidden border border-zinc-200">
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
       {!peerPresent && (
         <p className="absolute inset-0 flex items-center justify-center text-sm text-white/60">
@@ -612,6 +625,7 @@ function LiveKitRoomRenderer({
   onGazeChange?: (isFocused: boolean, isTeleprompter?: boolean) => void;
 }) {
   const room = useMemo(() => new Room(), []);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const cameraTracks = useTracks([Track.Source.Camera]);
   const screenTracks = useTracks([Track.Source.ScreenShare]);
@@ -652,6 +666,14 @@ function LiveKitRoomRenderer({
           const isEnabled = room.localParticipant.isCameraEnabled;
           room.localParticipant.setCameraEnabled(!isEnabled);
           return isEnabled;
+        },
+        toggleFullscreen: () => {
+          if (isFullscreenActive()) {
+            exitFullscreen().catch(() => {});
+            return false;
+          }
+          if (containerRef.current) requestFullscreen(containerRef.current).catch(() => {});
+          return true;
         },
         requestPeerMute: () => {
           const encoder = new TextEncoder();
@@ -698,15 +720,16 @@ function LiveKitRoomRenderer({
 
   if (role === "interviewer") {
     return (
-      <LiveKitRoom
-        room={room}
-        serverUrl={url}
-        token={token}
-        connect={true}
-        video={true}
-        audio={true}
-        className="relative w-full h-full min-h-[380px] flex flex-col md:flex-row gap-3"
-      >
+      <div ref={containerRef} className="relative w-full h-full min-h-[380px]">
+        <LiveKitRoom
+          room={room}
+          serverUrl={url}
+          token={token}
+          connect={true}
+          video={true}
+          audio={true}
+          className="w-full h-full flex flex-col md:flex-row gap-3"
+        >
         <RoomAudioRenderer />
         {/* Candidate Screenshare Viewport */}
         <div className="relative flex-1 min-h-[220px] bg-zinc-950 rounded-xl overflow-hidden border border-zinc-200 flex flex-col items-center justify-center">
@@ -750,47 +773,50 @@ function LiveKitRoomRenderer({
             />
           )}
         </div>
-      </LiveKitRoom>
+        </LiveKitRoom>
+      </div>
     );
   }
 
   return (
-    <LiveKitRoom
-      room={room}
-      serverUrl={url}
-      token={token}
-      connect={true}
-      video={true}
-      audio={true}
-      className="relative w-full h-full min-h-[360px] rounded-xl bg-black overflow-hidden border border-zinc-200"
-    >
-      <RoomAudioRenderer />
-      {!peerPresent && (
-        <p className="absolute inset-0 flex items-center justify-center text-sm text-white/60">
-          Waiting for interviewer to join…
-        </p>
-      )}
+    <div ref={containerRef} className="relative w-full h-full min-h-[360px] rounded-xl bg-black overflow-hidden border border-zinc-200">
+      <LiveKitRoom
+        room={room}
+        serverUrl={url}
+        token={token}
+        connect={true}
+        video={true}
+        audio={true}
+        className="relative w-full h-full"
+      >
+        <RoomAudioRenderer />
+        {!peerPresent && (
+          <p className="absolute inset-0 flex items-center justify-center text-sm text-white/60">
+            Waiting for interviewer to join…
+          </p>
+        )}
 
-      {remoteCamera && (
-        <VideoTrack
-          trackRef={remoteCamera}
-          className="w-full h-full object-contain"
-        />
-      )}
+        {remoteCamera && (
+          <VideoTrack
+            trackRef={remoteCamera}
+            className="w-full h-full object-contain"
+          />
+        )}
 
-      {remoteScreen && (
-        <VideoTrack
-          trackRef={remoteScreen}
-          className="absolute inset-0 w-full h-full object-contain bg-black"
-        />
-      )}
+        {remoteScreen && (
+          <VideoTrack
+            trackRef={remoteScreen}
+            className="absolute inset-0 w-full h-full object-contain bg-black"
+          />
+        )}
 
-      {localCamera && (
-        <VideoTrack
-          trackRef={localCamera}
-          className="absolute bottom-2 right-2 w-28 h-20 rounded-lg border border-white/40 shadow object-cover"
-        />
-      )}
-    </LiveKitRoom>
+        {localCamera && (
+          <VideoTrack
+            trackRef={localCamera}
+            className="absolute bottom-2 right-2 w-28 h-20 rounded-lg border border-white/40 shadow object-cover"
+          />
+        )}
+      </LiveKitRoom>
+    </div>
   );
 }

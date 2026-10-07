@@ -674,6 +674,7 @@ function InterviewRecorder({
   const [micMuted, setMicMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [muteRequested, setMuteRequested] = useState(false);
+  const [isFullscreenOn, setIsFullscreenOn] = useState(false);
   const [currentScreenTrack, setCurrentScreenTrack] = useState<MediaStreamTrack | null>(
     screenTrack || screenStreamRef.current?.getVideoTracks()[0] || null
   );
@@ -718,6 +719,9 @@ function InterviewRecorder({
   }
   function toggleCamera() {
     setCameraOff(webrtcApiRef.current?.toggleCamera() ?? false);
+  }
+  function toggleFullscreen() {
+    setIsFullscreenOn(webrtcApiRef.current?.toggleFullscreen() ?? false);
   }
 
   function pushSignal(signal_type: SignalType) {
@@ -777,6 +781,9 @@ function InterviewRecorder({
     // fullscreenElement/fullscreenchange, which the plain unprefixed versions miss there.
     let wasFullscreen = isFullscreenActive();
     const stopWatchingFullscreen = watchFullscreenChange(() => {
+      // Also keeps the Fullscreen button's label accurate when exited via Esc instead of
+      // the button itself, not just the integrity-signal bookkeeping below.
+      setIsFullscreenOn(isFullscreenActive());
       if (isFullscreenActive()) {
         wasFullscreen = true;
       } else if (wasFullscreen) {
@@ -1057,6 +1064,9 @@ function InterviewRecorder({
         </button>
         <button onClick={toggleScreenShare} className="btn-outline text-xs px-2 py-1">
           {currentScreenTrack ? "🖥️ Screen sharing (Active)" : "🖥️ Share screen"}
+        </button>
+        <button onClick={toggleFullscreen} className="btn-outline text-xs px-2 py-1">
+          {isFullscreenOn ? "⛶ Exit fullscreen" : "⛶ Fullscreen"}
         </button>
       </div>
       {/* Not display:none deliberately — some browsers stop maintaining a live decoded
