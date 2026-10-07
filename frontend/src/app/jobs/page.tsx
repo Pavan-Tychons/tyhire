@@ -16,6 +16,7 @@ export default function JobsPage() {
   const refresh = useCallback(() => {
     getJson<Job[]>("/jobs")
       .then(setJobs)
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
