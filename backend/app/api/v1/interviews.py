@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -86,6 +87,12 @@ logger = logging.getLogger(__name__)
 
 # In-memory buffer for real-time live transcription stream during active calls
 _live_transcripts: dict[str, list[dict]] = {}
+# Monotonic clock reading for the first live chunk of each session, so both sides' lines can
+# be placed on ONE timeline. The offset each browser reports can't do that job: the candidate
+# measures from their own "Join Meet" click and the interviewer from theirs, on two different
+# machines, so the two sets of offsets are minutes apart in the same conversation and
+# interleave nonsensically when merged.
+_live_transcript_epoch: dict[str, float] = {}
 _session_questions_cache: dict[str, list[dict]] = {}
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
@@ -839,9 +846,21 @@ async def upload_live_transcript_chunk(
     Chromium browsers and is known to silently drop results even there — this works
     identically on every browser since it only needs MediaRecorder + fetch."""
     content = await clip.read()
-    relative_path = storage.save_file(f"interviews/{session.id}/live-transcript", "chunk.webm", content)
+    # Stamped on arrival, not when transcription finishes — see _append_live_transcript_item.
+    captured_at = time.monotonic()
+    timeline_offset_ms = _live_timeline_offset_ms(str(session.id), captured_at)
+    # Keeps whatever container the browser actually produced (Safari records mp4, not webm);
+    # mislabelling it .webm leaves the transcription API guessing at the format.
+    relative_path = storage.save_file(
+        f"interviews/{session.id}/live-transcript", clip.filename or "chunk.webm", content
+    )
     background_tasks.add_task(
-        _process_live_transcript_chunk, str(session.id), "candidate", relative_path, session_offset_ms
+        _process_live_transcript_chunk,
+        str(session.id),
+        "candidate",
+        relative_path,
+        timeline_offset_ms,
+        captured_at,
     )
     return {"accepted": True}
 
@@ -855,23 +874,47 @@ async def upload_interviewer_live_transcript_chunk(
 ):
     """Interviewer-side counterpart of live-transcript-chunk above."""
     content = await clip.read()
-    relative_path = storage.save_file(f"interviews/{session.id}/live-transcript", "chunk.webm", content)
+    captured_at = time.monotonic()
+    timeline_offset_ms = _live_timeline_offset_ms(str(session.id), captured_at)
+    relative_path = storage.save_file(
+        f"interviews/{session.id}/live-transcript", clip.filename or "chunk.webm", content
+    )
     background_tasks.add_task(
-        _process_live_transcript_chunk, str(session.id), "interviewer", relative_path, session_offset_ms
+        _process_live_transcript_chunk,
+        str(session.id),
+        "interviewer",
+        relative_path,
+        timeline_offset_ms,
+        captured_at,
     )
     return {"accepted": True}
 
 
-def _process_live_transcript_chunk(sid: str, speaker: str, relative_path: str, offset_ms: int) -> None:
+def _recent_speaker_context(sid: str, speaker: str, max_chars: int = 400) -> str | None:
+    """The tail of what this same speaker last said, to prime the next clip's transcription.
+
+    Same-speaker only: priming with the other participant's words biases the model toward
+    putting their phrasing in this speaker's mouth, which is the opposite of what a
+    two-column transcript needs.
+    """
+    previous = [item["text"] for item in _live_transcripts.get(sid, []) if item["speaker"] == speaker]
+    if not previous:
+        return None
+    return " ".join(previous[-2:])[-max_chars:]
+
+
+def _process_live_transcript_chunk(
+    sid: str, speaker: str, relative_path: str, offset_ms: int, sort_key: float | None = None
+) -> None:
     """Transcribes one live-transcript clip and appends it to the buffer if it actually
     contains speech, then always deletes the clip itself — unlike sentiment-sample clips
     (kept for facial/voice analysis), only this clip's text has any lasting value, and these
     arrive every few seconds for the whole call, so leaving them on disk isn't free."""
     try:
         with storage.decrypted_temp_copy(relative_path) as path:
-            text = transcribe_short_clip(path)
+            text = transcribe_short_clip(path, prompt=_recent_speaker_context(sid, speaker))
         if text:
-            _append_live_transcript_item(sid, speaker, text, offset_ms)
+            _append_live_transcript_item(sid, speaker, text, offset_ms, sort_key=sort_key)
     except Exception:  # noqa: BLE001 - best-effort; a missed chunk just doesn't appear live,
         # same as a dropped browser SpeechRecognition result would have.
         logger.exception("Live transcript chunk transcription failed for session %s", sid)
@@ -1142,9 +1185,28 @@ def complete_session(
     return session
 
 
-def _append_live_transcript_item(sid: str, speaker: str, text: str, offset_ms: int) -> dict:
+def _live_timeline_offset_ms(sid: str, captured_at: float | None = None) -> int:
+    """Position on this session's single shared live-transcript timeline, in ms.
+
+    Anchored to the first live chunk seen for the session and measured server-side, so the
+    candidate's and interviewer's lines are directly comparable — unlike the per-browser
+    offsets the clients report, which are measured from each participant's own join click.
+    """
+    epoch = _live_transcript_epoch.setdefault(sid, time.monotonic())
+    return max(0, int(((captured_at if captured_at is not None else time.monotonic()) - epoch) * 1000))
+
+
+def _append_live_transcript_item(
+    sid: str, speaker: str, text: str, offset_ms: int, sort_key: float | None = None
+) -> dict:
     """Shared by the manual-entry endpoint below and the chunked-transcription background
-    task further down — one place owns the in-memory buffer's shape and trim policy."""
+    task further down — one place owns the in-memory buffer's shape and trim policy.
+
+    Kept sorted by when the audio was *captured*, not when its transcription happened to
+    come back: the two speakers are transcribed by concurrent background tasks whose
+    round-trips differ by seconds, so appending in completion order visibly scrambles the
+    conversation (a reply showing up above the question it answers).
+    """
     if sid not in _live_transcripts:
         _live_transcripts[sid] = []
 
@@ -1154,10 +1216,13 @@ def _append_live_transcript_item(sid: str, speaker: str, text: str, offset_ms: i
         "text": text.strip(),
         "offset_ms": offset_ms,
         "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        "_sort_key": sort_key if sort_key is not None else float(offset_ms),
     }
-    _live_transcripts[sid].append(item)
-    if len(_live_transcripts[sid]) > 250:
-        _live_transcripts[sid] = _live_transcripts[sid][-250:]
+    items = _live_transcripts[sid]
+    items.append(item)
+    items.sort(key=lambda entry: entry["_sort_key"])
+    if len(items) > 250:
+        del items[: len(items) - 250]
     return item
 
 
@@ -1168,7 +1233,14 @@ def push_live_transcript(
     db: Session = Depends(get_db),
 ):
     """Buffers live streaming speech utterances in real time for interviewer display."""
-    item = _append_live_transcript_item(str(session_id), payload.speaker, payload.text, payload.offset_ms)
+    sid = str(session_id)
+    now = time.monotonic()
+    # Placed on the same server-side timeline as transcribed chunks rather than trusting the
+    # caller's own offset, so a typed utterance slots into the conversation in the right
+    # place instead of jumping to the top or bottom of the feed.
+    item = _append_live_transcript_item(
+        sid, payload.speaker, payload.text, _live_timeline_offset_ms(sid, now), sort_key=now
+    )
     return {"status": "ok", "item": item}
 
 
