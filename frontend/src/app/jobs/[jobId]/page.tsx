@@ -23,7 +23,7 @@ const BUCKET_COLORS: Record<Bucket, string> = {
 };
 
 export default function JobDetailPage() {
-  const { prompt } = useDialog();
+  const { prompt, notify } = useDialog();
   const { jobId } = useParams<{ jobId: string }>();
   const [job, setJob] = useState<Job | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -57,9 +57,30 @@ export default function JobDetailPage() {
 
     setUploading(true);
     try {
-      await postForm(`/jobs/${jobId}/resumes`, form);
+      const uploaded = await postForm<Candidate[]>(`/jobs/${jobId}/resumes`, form);
       if (fileInputRef.current) fileInputRef.current.value = "";
       refresh();
+
+      // Duplicates are skipped rather than scored, and they land in a collapsed list
+      // further down the page — easy to miss when you've just uploaded a batch and are
+      // looking at the buckets. Say so directly instead.
+      const duplicates = uploaded.filter((c) => c.is_duplicate_of);
+      if (duplicates.length > 0) {
+        const names = duplicates
+          .map((c) => c.full_name || c.email || "Unnamed candidate")
+          .join(", ");
+        await notify({
+          title:
+            duplicates.length === 1
+              ? "Duplicate resume skipped"
+              : `${duplicates.length} duplicate resumes skipped`,
+          description:
+            `${names} ${duplicates.length === 1 ? "is" : "are"} already on this job — ` +
+            `matched on email address, mobile number or name. ` +
+            `${duplicates.length === 1 ? "This resume was" : "These resumes were"} not ` +
+            `scored again, and can be found under "Duplicates" below the candidate buckets.`,
+        });
+      }
     } finally {
       setUploading(false);
     }
