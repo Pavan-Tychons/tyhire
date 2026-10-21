@@ -78,6 +78,7 @@ def on_startup():
             conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS skills_breakdown JSONB;"))
             conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS profession_fit JSONB;"))
             conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS campus_metadata JSONB;"))
+            conn.execute(text("ALTER TABLE candidates ADD COLUMN IF NOT EXISTS experience_analysis JSONB;"))
     except Exception as exc:
         logger.debug("PostgreSQL startup migration notice: %s", exc)
 
@@ -100,6 +101,7 @@ def on_startup():
         ("candidates", "skills_breakdown", "JSON"),
         ("candidates", "profession_fit", "JSON"),
         ("candidates", "campus_metadata", "JSON"),
+        ("candidates", "experience_analysis", "JSON"),
     ]
     for table, col, col_type in sqlite_cols:
         try:

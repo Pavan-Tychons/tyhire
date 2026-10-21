@@ -18,7 +18,7 @@ from app.schemas.candidate import (
     OverrideRequest,
     ScreeningDetailsRequest,
 )
-from app.services import dedupe, knockout, scoring, storage, triage
+from app.services import dedupe, experience, knockout, scoring, storage, triage
 from app.services.fit_report import build_fit_report_pdf
 from app.services.resume_parser import parse_resume
 from app.services.text_extract import extract_text
@@ -109,6 +109,7 @@ async def upload_resumes(
             candidate.phone = profile.get("phone")
             candidate.notice_period_days = profile.get("notice_period_days")
             candidate.expected_salary = profile.get("expected_salary")
+            candidate.experience_analysis = experience.analyze_experience(profile)
 
             duplicate = dedupe.find_duplicate(
                 db, job_id, candidate.email, candidate.phone, candidate.full_name

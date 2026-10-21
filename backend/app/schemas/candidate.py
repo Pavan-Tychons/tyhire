@@ -29,6 +29,7 @@ class CandidateOut(BaseModel):
     skills_breakdown: Optional[dict[str, Any]] = None
     profession_fit: Optional[dict[str, Any]] = None
     campus_metadata: Optional[dict[str, Any]] = None
+    experience_analysis: Optional[dict[str, Any]] = None
     manual_score_adjustment: Optional[int]
     manual_adjustment_reason: Optional[str]
     bucket: Optional[Bucket]

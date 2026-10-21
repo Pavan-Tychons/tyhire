@@ -78,6 +78,29 @@ export interface CampusMetadata {
   college?: string;
 }
 
+export interface ExperienceGap {
+  start: string;
+  end: string;
+  months: number;
+  ongoing: boolean;
+}
+
+export interface ExperienceAnalysis {
+  /** Measured from the employment-history dates; null when they couldn't be read. */
+  computed_years: number | null;
+  /** What the resume itself claimed. */
+  claimed_years: number | null;
+  basis: "employment_history" | "stated" | "none";
+  /** Some roles gave only a year, so the span is approximate. */
+  approximate: boolean;
+  unparsed_roles: string[];
+  currently_employed: boolean;
+  gaps: ExperienceGap[];
+  total_gap_months: number;
+  /** claimed minus computed; positive means the resume overstates it. */
+  discrepancy_years: number | null;
+}
+
 export interface Candidate {
   id: string;
   job_id: string;
@@ -101,6 +124,7 @@ export interface Candidate {
   skills_breakdown: SkillsBreakdown | null;
   profession_fit: ProfessionFit | null;
   campus_metadata: CampusMetadata | null;
+  experience_analysis: ExperienceAnalysis | null;
   manual_score_adjustment: number | null;
   manual_adjustment_reason: string | null;
   bucket: Bucket | null;

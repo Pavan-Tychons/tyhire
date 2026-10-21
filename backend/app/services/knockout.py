@@ -1,5 +1,6 @@
 import re
 from app.models.job import Job, WorkMode
+from app.services import experience
 
 BRANCH_ALIASES: dict[str, set[str]] = {
     "cse": {"cse", "cs", "computer science", "computer science and engineering", "comp sci", "computer engineering"},
@@ -53,11 +54,21 @@ def _match_campus_branch(candidate_branch: str, allowed_branches: list[str]) -> 
 def check_knockout(profile: dict, job: Job) -> tuple[bool, list[str]]:
     reasons: list[str] = []
 
-    years = profile.get("total_years_experience")
+    # Measured from the employment-history dates rather than taken from the resume's own
+    # total, which is a self-reported claim — routinely rounded up, left stale from an
+    # older CV, or counted from the start of a degree. analyze_experience falls back to the
+    # stated figure when the dates can't be read, so this never fails someone for having an
+    # unusually-formatted history (see services/experience.py).
+    exp = experience.analyze_experience(profile)
+    years = exp["computed_years"] if exp["basis"] == "employment_history" else exp["claimed_years"]
     if job.min_years_experience is not None and years is not None:
         if years < job.min_years_experience:
+            measured = exp["basis"] == "employment_history"
+            source = "employment history shows" if measured else "resume states"
+            qualifier = " (approx.)" if measured and exp["approximate"] else ""
             reasons.append(
-                f"Requires {job.min_years_experience}+ yrs experience, candidate has {years}"
+                f"Requires {job.min_years_experience}+ yrs experience, "
+                f"{source} {years}{qualifier}"
             )
 
     # A remote role shouldn't knock candidates out for location at all, regardless of

@@ -14,7 +14,7 @@ from app.db.session import SessionLocal
 from app.models.bulk_batch import BulkUploadBatch
 from app.models.candidate import Candidate
 from app.models.job import Job
-from app.services import dedupe, knockout, scoring, storage, triage
+from app.services import dedupe, experience, knockout, scoring, storage, triage
 from app.services.keyword_stuffing import detect_keyword_stuffing
 from app.services.knockout import check_campus_knockout
 from app.services.resume_parser import parse_resume
@@ -170,6 +170,7 @@ async def run_campus_bulk_processing_task(
                 candidate.full_name = profile.get("full_name") or (campus_meta.get("name") if campus_meta else None)
                 candidate.email = profile.get("email") or (campus_meta.get("email") if campus_meta else None)
                 candidate.phone = profile.get("phone") or (campus_meta.get("phone") if campus_meta else None)
+                candidate.experience_analysis = experience.analyze_experience(profile)
 
                 # Deduplication check
                 duplicate = dedupe.find_duplicate(

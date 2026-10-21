@@ -63,6 +63,10 @@ class Candidate(Base):
     skills_breakdown = Column(JSON, nullable=True)
     profession_fit = Column(JSON, nullable=True)
     campus_metadata = Column(JSON, nullable=True)
+    # Experience measured from the work-history dates, plus any employment gaps — see
+    # services/experience.py. Stored rather than recomputed on read so the figure HR saw
+    # when they made a decision is the figure on the record.
+    experience_analysis = Column(JSON, nullable=True)
 
     # HR-entered adjustment on top of the AI score (e.g. a competing offer, a referral signal)
     # — always shown separately from the AI sub-scores, never silently folded into them.

@@ -338,6 +338,102 @@ export default function CandidateDetailPage() {
         </Section>
       )}
 
+      {/* Experience measured from the employment-history dates, rather than the figure the
+          resume states for itself. */}
+      {candidate.experience_analysis && (
+        <Section title="Experience & Employment History">
+          {(() => {
+            const exp = candidate.experience_analysis!;
+            const measured = exp.basis === "employment_history";
+            // Only worth drawing attention to when the resume overstates by a meaningful
+            // margin — a few months either way is rounding, not a discrepancy.
+            const overstated =
+              measured && exp.discrepancy_years !== null && exp.discrepancy_years >= 1;
+            return (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <span className="text-zinc-500 block">
+                      {measured ? "Calculated from employment history" : "Stated on resume"}
+                    </span>
+                    <span className="text-lg font-bold text-zinc-900">
+                      {measured ? exp.computed_years : exp.claimed_years}
+                      <span className="text-xs font-medium text-zinc-500"> yrs</span>
+                      {measured && exp.approximate && (
+                        <span className="text-[11px] font-normal text-zinc-400"> (approx.)</span>
+                      )}
+                    </span>
+                  </div>
+                  {measured && exp.claimed_years !== null && (
+                    <div>
+                      <span className="text-zinc-500 block">Stated on resume</span>
+                      <span
+                        className={`text-lg font-bold ${overstated ? "text-amber-700" : "text-zinc-900"}`}
+                      >
+                        {exp.claimed_years}
+                        <span className="text-xs font-medium text-zinc-500"> yrs</span>
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <span className="text-zinc-500 block">Currently employed</span>
+                    <span className="text-sm font-semibold text-zinc-900">
+                      {exp.currently_employed ? "Yes" : "No"}
+                    </span>
+                  </div>
+                </div>
+
+                {overstated && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                    The resume states {exp.claimed_years} yrs, but the dates on the listed
+                    roles add up to {exp.computed_years}. Worth confirming with the candidate
+                    — overlapping roles are counted once here, and a stated total often
+                    includes internships or study.
+                  </p>
+                )}
+
+                {exp.gaps.length > 0 && (
+                  <div>
+                    <span className="text-[11px] uppercase font-bold text-zinc-500">
+                      Employment gaps
+                    </span>
+                    <ul className="mt-1 space-y-1">
+                      {exp.gaps.map((gap, i) => (
+                        <li
+                          key={i}
+                          className="text-xs text-zinc-700 bg-zinc-50 border border-zinc-200 rounded-lg px-2.5 py-1.5 flex items-center justify-between gap-3"
+                        >
+                          <span>
+                            {gap.start} → {gap.ongoing ? "present" : gap.end}
+                            {gap.ongoing && (
+                              <span className="text-zinc-500"> (not currently in a listed role)</span>
+                            )}
+                          </span>
+                          <span className="font-semibold shrink-0">
+                            {gap.months} {gap.months === 1 ? "month" : "months"}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-[11px] text-zinc-400 mt-1">
+                      Gaps of 3+ months between listed roles. A gap is a question to ask,
+                      not a mark against the candidate.
+                    </p>
+                  </div>
+                )}
+
+                {exp.unparsed_roles.length > 0 && (
+                  <p className="text-xs text-zinc-500">
+                    Couldn&apos;t read dates for {exp.unparsed_roles.join(", ")} — the figure
+                    above falls back to what the resume states.
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+        </Section>
+      )}
+
       {/* Campus Metadata if available */}
       {candidate.campus_metadata && (
         <Section title="Campus Interview / College Profile">
