@@ -103,14 +103,25 @@ def update_job(
         raise HTTPException(status_code=400, detail="salary_band_min must not exceed salary_band_max")
 
     # Same reasoning as above, mirroring JobCreate's _weights_sum_to_one — a partial update
-    # touching only one weight field would otherwise leave the other three (carried over
-    # from the existing job) summing to something scoring.score_candidate never expected.
+    # touching only one weight field would otherwise leave the others (carried over from the
+    # existing job) summing to something scoring.score_candidate never expected.
+    #
+    # All five categories are counted. Communication was added as a fifth weighted category
+    # after this check was written and never added here, so the total always came up short
+    # by exactly that weight and every save was rejected — a job created through the current
+    # form (which spreads weight across all five) could never be edited again. Legacy jobs
+    # are unaffected: their communication weight is 0.0 and the other four already sum to 1.
     weight_total = (
-        job.weight_skills + job.weight_experience + job.weight_education + job.weight_certifications
+        job.weight_skills
+        + job.weight_experience
+        + job.weight_education
+        + job.weight_certifications
+        + (job.weight_communication or 0.0)
     )
     if abs(weight_total - 1.0) > 0.01:
         raise HTTPException(
-            status_code=400, detail=f"Sub-score weights must sum to 1.0 (got {weight_total})"
+            status_code=400,
+            detail=f"Sub-score weights must sum to 1.0 (got {weight_total:.2f})",
         )
 
     db.add(job)
