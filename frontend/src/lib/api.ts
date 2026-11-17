@@ -20,12 +20,44 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * FastAPI reports a 422 as an array of per-error objects, each carrying `loc` (the field
+ * path), `msg`, and `input` — the entire rejected payload. Stringifying that whole structure
+ * put a wall of JSON in front of the user, with the one sentence that mattered buried in the
+ * middle of it. This keeps the messages and drops everything else, `input` included: it is
+ * noise here, and on this app it is a form full of someone's data.
+ */
+function formatValidationErrors(detail: unknown[]): string | null {
+  const lines = detail
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const { msg, loc } = item as { msg?: unknown; loc?: unknown };
+      if (typeof msg !== "string" || !msg.trim()) return null;
+      // Pydantic v2 prefixes anything raised from a custom validator with "Value error, ".
+      const text = msg.replace(/^value error,\s*/i, "").trim();
+      // loc is ["body"] for a whole-model rule and ["body", "field"] for a single field, so
+      // dropping "body" leaves either nothing or the field name worth naming.
+      const path = Array.isArray(loc)
+        ? loc.filter((part): part is string => typeof part === "string" && part !== "body")
+        : [];
+      return path.length > 0 ? `${path.join(" → ")}: ${text}` : text;
+    })
+    .filter((line): line is string => line !== null);
+
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
 function extractDetail(status: number, statusText: string, body: string): string {
   try {
     const parsed = JSON.parse(body);
     if (parsed && typeof parsed === "object" && "detail" in parsed) {
       const detail = (parsed as { detail: unknown }).detail;
       if (typeof detail === "string" && detail.trim()) return detail;
+      if (Array.isArray(detail)) {
+        const formatted = formatValidationErrors(detail);
+        if (formatted) return formatted;
+      }
+      // Some other shape entirely — better a compact dump than swallowing the reason.
       if (detail != null) return JSON.stringify(detail);
     }
   } catch {

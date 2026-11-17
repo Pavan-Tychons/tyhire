@@ -55,7 +55,7 @@ class JobCreate(BaseModel):
             and self.salary_band_max is not None
             and self.salary_band_min > self.salary_band_max
         ):
-            raise ValueError("salary_band_min must not exceed salary_band_max")
+            raise ValueError("Minimum salary must not be greater than the maximum")
         return self
 
     @model_validator(mode="after")

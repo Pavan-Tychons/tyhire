@@ -102,7 +102,7 @@ def update_job(
         and job.salary_band_max is not None
         and job.salary_band_min > job.salary_band_max
     ):
-        raise HTTPException(status_code=400, detail="salary_band_min must not exceed salary_band_max")
+        raise HTTPException(status_code=400, detail="Minimum salary must not be greater than the maximum")
 
     # Same reasoning as above, mirroring JobCreate's _weights_sum_to_one — a partial update
     # touching only one weight field would otherwise leave the others (carried over from the

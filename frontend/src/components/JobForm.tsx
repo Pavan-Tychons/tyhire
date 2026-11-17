@@ -205,6 +205,15 @@ export default function JobForm({
   const [salaryMin, setSalaryMin] = useState(rupeesToLpaInput(defaultValues?.salary_band_min));
   const [salaryMax, setSalaryMax] = useState(rupeesToLpaInput(defaultValues?.salary_band_max));
 
+  // Checked live rather than on submit, so a band entered the wrong way round is flagged at
+  // the field while the user is still looking at it. lpaToRupees returns null for blank or
+  // unparseable input, so this fires only when both ends are real figures — a half-filled
+  // band is incomplete, not contradictory, and `required` already covers that case.
+  const salaryMinRupees = lpaToRupees(salaryMin);
+  const salaryMaxRupees = lpaToRupees(salaryMax);
+  const salaryBandInvalid =
+    salaryMinRupees !== null && salaryMaxRupees !== null && salaryMinRupees > salaryMaxRupees;
+
   // Campus fields
   const [isCampusDrive, setIsCampusDrive] = useState(defaultValues?.is_campus_drive ?? false);
   const [campusMinCgpa, setCampusMinCgpa] = useState(
@@ -317,6 +326,13 @@ export default function JobForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    // Stopped here as well as flagged inline. The API rejects this too, but its 422 names the
+    // raw column (`salary_band_min`) in rupees, which is neither the field label nor the unit
+    // on screen — so the request is simply never made.
+    if (salaryBandInvalid) {
+      setError("Check the salary band below — the maximum must be at least the minimum.");
+      return;
+    }
     setSubmitting(true);
     try {
       await onSubmit({
@@ -510,7 +526,8 @@ export default function JobForm({
               step="any"
               value={salaryMin}
               onChange={(e) => setSalaryMin(e.target.value)}
-              className="input"
+              aria-invalid={salaryBandInvalid}
+              className={`input ${salaryBandInvalid ? "border-red-500" : ""}`}
               placeholder="Min, e.g. 5"
             />
             <span className="shrink-0 text-xs text-zinc-500">to</span>
@@ -521,11 +538,20 @@ export default function JobForm({
               step="any"
               value={salaryMax}
               onChange={(e) => setSalaryMax(e.target.value)}
-              className="input"
+              aria-invalid={salaryBandInvalid}
+              className={`input ${salaryBandInvalid ? "border-red-500" : ""}`}
               placeholder="Max, e.g. 10.5"
             />
             <span className="shrink-0 text-xs font-medium text-zinc-600">LPA</span>
           </div>
+          {salaryBandInvalid ? (
+            // role="alert" so a screen reader announces it when it appears, rather than
+            // leaving the mistake visible only to someone looking at that part of the page.
+            <p className="text-sm font-medium text-red-600 mt-1" role="alert">
+              Maximum must be at least the minimum — {salaryMin} LPA down to {salaryMax} LPA is
+              the wrong way round.
+            </p>
+          ) : null}
           <p className="text-xs text-zinc-500 mt-1">
             Lakhs per annum, decimals welcome — 5.5 to 11.3 means ₹5,50,000 to ₹11,30,000.
             Candidates whose expected salary is above the max are knocked out.
@@ -694,7 +720,7 @@ export default function JobForm({
         )}
       </Field>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-red-600 whitespace-pre-line">{error}</p>}
 
       <div className="flex items-center gap-3">
         <button type="submit" disabled={submitting} className="btn-primary">
