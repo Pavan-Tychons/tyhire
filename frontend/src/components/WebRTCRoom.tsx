@@ -555,33 +555,35 @@ export default function WebRTCRoom({
           </div>
         )}
 
-        {/* Candidate Screenshare Viewport (Always in DOM) */}
-        <div className="relative flex-1 min-h-[220px] bg-zinc-950 rounded-xl overflow-hidden border border-zinc-200 flex flex-col items-center justify-center">
+        {/* Candidate screen share. Kept mounted at all times and hidden with CSS rather than
+          * removed from the tree: the track can arrive in a WebRTC callback before React has
+          * re-rendered (see attachScreen), and an unmounted element means a null ref and a
+          * stream attached to nothing. Hidden rather than present-but-empty, so there is no
+          * dead "waiting for screen share" panel occupying half the stage before sharing. */}
+        <div
+          className={`relative flex-1 min-h-[220px] bg-zinc-950 rounded-xl overflow-hidden border border-zinc-200 ${
+            hasRemoteScreen ? "flex flex-col items-center justify-center" : "hidden"
+          }`}
+        >
           <video
             ref={remoteScreenRef}
             autoPlay
             playsInline
             muted
-            className={`w-full h-full object-contain bg-zinc-950 ${hasRemoteScreen ? "block" : "hidden"}`}
+            className="w-full h-full object-contain bg-zinc-950"
           />
-          {hasRemoteScreen && (
-            <div className="absolute top-2 left-2 px-2.5 py-1 rounded-md bg-white/95 shadow text-xs font-semibold text-zinc-800 border border-zinc-200 flex items-center gap-1.5 z-10">
-              <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
-              <span>🖥️ Candidate Screenshare (Live)</span>
-            </div>
-          )}
-          {!hasRemoteScreen && (
-            <div className="flex flex-col items-center justify-center p-6 text-center text-zinc-400">
-              <span className="text-3xl mb-2">🖥️</span>
-              <p className="text-xs font-medium text-zinc-300">Candidate Screen Share</p>
-              <p className="text-[11px] text-zinc-500 mt-0.5">Waiting for candidate screen share stream…</p>
-            </div>
-          )}
+          <div className="absolute top-2 left-2 px-2.5 py-1 rounded-md bg-white/95 shadow text-xs font-semibold text-zinc-800 border border-zinc-200 flex items-center gap-1.5 z-10">
+            <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+            <span>🖥️ Candidate Screenshare (Live)</span>
+          </div>
         </div>
 
-        {/* Candidate Live Camera with Gaze Border */}
+        {/* Candidate camera. Takes half the row beside the interviewer while nothing is being
+          * shared, and narrows to a side panel once the screen share claims the main stage. */}
         <div
-          className={`relative w-full md:w-80 min-h-[220px] bg-zinc-900 rounded-xl overflow-hidden border-2 transition-all duration-300 ${gazeBorderClass}`}
+          className={`relative ${
+            hasRemoteScreen ? "w-full md:w-80" : "flex-1"
+          } min-h-[220px] bg-zinc-900 rounded-xl overflow-hidden border-2 transition-all duration-300 ${gazeBorderClass}`}
         >
           {!peerPresent && (
             <p className="absolute inset-0 flex items-center justify-center text-xs text-white/60">
@@ -627,16 +629,34 @@ export default function WebRTCRoom({
             </span>
           </div>
 
-          {/* Interviewer Self-PIP */}
-          <div className="absolute bottom-2 right-2 w-24 h-16 rounded-lg overflow-hidden border border-white/40 shadow-md bg-black">
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
-          </div>
+        </div>
+
+        {/* Interviewer self-view: a full panel beside the candidate until a screen share
+          * starts, then a picture-in-picture so the shared screen gets the room.
+          *
+          * One element throughout, with only these classes changing. Writing this as a
+          * ternary over two <video> tags would remount it on every toggle, and srcObject is
+          * assigned exactly once when the camera is acquired - the self-view would go black
+          * the first time the candidate shared their screen, and stay black. */}
+        <div
+          className={
+            hasRemoteScreen
+              ? "absolute bottom-3 right-3 z-20 w-28 h-20 rounded-lg overflow-hidden border border-white/40 shadow-md bg-black"
+              : "relative flex-1 min-h-[220px] rounded-xl overflow-hidden border border-zinc-200 bg-zinc-900"
+          }
+        >
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
+          {!hasRemoteScreen && (
+            <div className="absolute top-2 left-2 px-2.5 py-1 rounded-md bg-white/95 shadow text-xs font-semibold text-zinc-800 border border-zinc-200 z-10">
+              You
+            </div>
+          )}
         </div>
       </div>
     );
@@ -814,33 +834,30 @@ function LiveKitRoomRenderer({
           connect={true}
           video={true}
           audio={true}
-          className="w-full h-full flex flex-col md:flex-row gap-3"
+          className="relative w-full h-full flex flex-col md:flex-row gap-3"
         >
         <RoomAudioRenderer />
-        {/* Candidate Screenshare Viewport */}
-        <div className="relative flex-1 min-h-[220px] bg-zinc-950 rounded-xl overflow-hidden border border-zinc-200 flex flex-col items-center justify-center">
-          {remoteScreen ? (
-            <>
-              <VideoTrack
-                trackRef={remoteScreen}
-                className="w-full h-full object-contain bg-zinc-950"
-              />
-              <div className="absolute top-2 left-2 px-2.5 py-1 rounded-md bg-white/95 shadow text-xs font-semibold text-zinc-800 border border-zinc-200 flex items-center gap-1.5 z-10">
-                <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
-                <span>🖥️ Candidate Screenshare (Live)</span>
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-col items-center justify-center p-6 text-center text-zinc-400">
-              <span className="text-3xl mb-2">🖥️</span>
-              <p className="text-xs font-medium text-zinc-300">Candidate Screen Share</p>
-              <p className="text-[11px] text-zinc-500 mt-0.5">Waiting for candidate screen share stream…</p>
+        {/* Candidate screen share. Rendered only once a track exists - unlike the mesh path
+          * above, VideoTrack attaches on mount, so there is nothing to keep alive. */}
+        {remoteScreen && (
+          <div className="relative flex-1 min-h-[220px] bg-zinc-950 rounded-xl overflow-hidden border border-zinc-200 flex flex-col items-center justify-center">
+            <VideoTrack
+              trackRef={remoteScreen}
+              className="w-full h-full object-contain bg-zinc-950"
+            />
+            <div className="absolute top-2 left-2 px-2.5 py-1 rounded-md bg-white/95 shadow text-xs font-semibold text-zinc-800 border border-zinc-200 flex items-center gap-1.5 z-10">
+              <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
+              <span>🖥️ Candidate Screenshare (Live)</span>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* Candidate Camera Viewport */}
-        <div className="relative w-full md:w-80 min-h-[220px] bg-zinc-900 rounded-xl overflow-hidden border-2 border-emerald-500 ring-2 ring-emerald-500/30">
+        {/* Candidate camera: half the row beside the interviewer, a side panel once shared. */}
+        <div
+          className={`relative ${
+            remoteScreen ? "w-full md:w-80" : "flex-1"
+          } min-h-[220px] bg-zinc-900 rounded-xl overflow-hidden border-2 border-emerald-500 ring-2 ring-emerald-500/30`}
+        >
           {!peerPresent && (
             <p className="absolute inset-0 flex items-center justify-center text-xs text-white/60">
               Waiting for candidate to join…
@@ -852,13 +869,23 @@ function LiveKitRoomRenderer({
               className="w-full h-full object-cover"
             />
           )}
-          {localCamera && (
+        </div>
+
+        {/* Interviewer self-view: a panel of its own until a screen share starts, then a PIP. */}
+        {localCamera &&
+          (remoteScreen ? (
             <VideoTrack
               trackRef={localCamera}
-              className="absolute bottom-2 right-2 w-24 h-16 rounded-lg border border-white/40 shadow-md object-cover"
+              className="absolute bottom-3 right-3 z-20 w-28 h-20 rounded-lg border border-white/40 shadow-md object-cover"
             />
-          )}
-        </div>
+          ) : (
+            <div className="relative flex-1 min-h-[220px] rounded-xl overflow-hidden border border-zinc-200 bg-zinc-900">
+              <VideoTrack trackRef={localCamera} className="w-full h-full object-cover" />
+              <div className="absolute top-2 left-2 px-2.5 py-1 rounded-md bg-white/95 shadow text-xs font-semibold text-zinc-800 border border-zinc-200 z-10">
+                You
+              </div>
+            </div>
+          ))}
         </LiveKitRoom>
       </div>
     );
