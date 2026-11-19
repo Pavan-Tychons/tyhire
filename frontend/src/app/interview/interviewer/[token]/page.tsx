@@ -149,7 +149,6 @@ export default function InterviewerCapturePage() {
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
   const [emailRecipient, setEmailRecipient] = useState("");
-  const [closeFailed, setCloseFailed] = useState(false);
   const { toast } = useDialog();
 
   // Manual test utterance input
@@ -865,20 +864,9 @@ export default function InterviewerCapturePage() {
                   >
                     View Consolidated Scorecard
                   </button>
-                  {closeFailed ? (
-                    <span className="text-xs text-zinc-500">
-                      Your browser won&apos;t let a page close a tab it didn&apos;t open —
-                      close this one yourself when you&apos;re done. Nothing is still
-                      recording.
-                    </span>
-                  ) : (
-                    <button
-                      onClick={handleCloseTab}
-                      className="px-3.5 py-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-xs font-bold border border-zinc-200"
-                    >
-                      Close this tab
-                    </button>
-                  )}
+                  <span className="text-xs text-zinc-500">
+                    You can close this tab when you&apos;re done — nothing is still recording.
+                  </span>
                 </div>
               </div>
             ) : (
@@ -1400,21 +1388,9 @@ export default function InterviewerCapturePage() {
                 >
                   Close
                 </button>
-                {closeFailed ? (
-                  <div className="flex items-center gap-1.5 text-emerald-700 max-w-[260px] text-right">
-                    <span className="text-sm leading-none">✓</span>
-                    <p className="text-xs font-semibold">
-                      All done — this evaluation is saved. You can safely close this tab now.
-                    </p>
-                  </div>
-                ) : (
-                  <button
-                    onClick={handleCloseTab}
-                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg shadow-xs"
-                  >
-                    Finish & Close Tab
-                  </button>
-                )}
+                <span className="text-xs font-semibold text-emerald-700 self-center max-w-[260px] text-right">
+                  ✓ All done — this evaluation is saved. You can close this tab when finished.
+                </span>
               </div>
             </div>
           </div>

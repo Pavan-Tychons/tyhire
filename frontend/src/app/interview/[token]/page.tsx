@@ -103,20 +103,10 @@ export default function InterviewJoinPage() {
 }
 
 function CompletedScreen({ hadError }: { hadError: boolean }) {
-  const [closeFailed, setCloseFailed] = useState(false);
-
-  function handleClose() {
-    // Best-effort — script-initiated tab close only works for tabs opened by script, which
-    // this one wasn't (it's a normal navigated-to link), so most browsers silently ignore
-    // this with no error and no event to detect it by. If we're still here a moment
-    // later, it clearly didn't work — fall back to telling the candidate to close the tab
-    // themselves instead of leaving an unresponsive button with no explanation. The
-    // teardown that actually matters (camera/mic/screen-share) already happened before
-    // this screen ever rendered, in InterviewRecorder.finish().
-    window.close();
-    setTimeout(() => setCloseFailed(true), 300);
-  }
-
+  // No "Close" button here: a tab opened from a pasted interview link is not script-closable,
+  // so window.close() is silently refused by the browser (TYH-019). Rather than offer a button
+  // that can't keep its promise, we just tell the candidate they're free to close the tab. The
+  // teardown that matters (camera/mic/screen-share) already happened in InterviewRecorder.finish().
   return (
     <Centered>
       <div className="space-y-3">
@@ -128,16 +118,9 @@ function CompletedScreen({ hadError }: { hadError: boolean }) {
             : "Thanks — your interview has been submitted for review. Your camera, " +
               "microphone, and screen sharing have been turned off."}
         </p>
-        {closeFailed ? (
-          <p className="text-sm text-zinc-500">
-            This tab can&apos;t be closed automatically — go ahead and close it yourself
-            (or just navigate away). Everything has already been submitted.
-          </p>
-        ) : (
-          <button onClick={handleClose} className="btn-outline">
-            Close
-          </button>
-        )}
+        <p className="text-sm text-zinc-500">
+          You can safely close this tab now — everything has already been submitted.
+        </p>
       </div>
     </Centered>
   );
