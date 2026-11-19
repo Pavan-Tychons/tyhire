@@ -396,6 +396,194 @@ docker compose up -d
 > `### YYYY-MM-DD — <title>` then what / why / files / verification.
 > Keep entries atomic; add one whenever code, schema, infra, config, or deployment changes.
 
+### 2026-11-19 — Fix: Consolidated Scorecard showed template/placeholder values, not real scores
+- **What:** The scorecard modal now shows **real** values, adds a genuine **Interview Score**, and
+  always loads live data when opened.
+- **Why (root cause):** (1) The modal had **hardcoded fake fallbacks** — when a real value was null
+  it rendered invented numbers (`85/100` fit, `Clean (100)` proctoring, `Proceed` decision, `?? 85`
+  per question), so an unscored candidate looked like 85/100. (2) Two of the three "View
+  Consolidated Scorecard" buttons opened the modal with `setShowScorecard(true)` **without fetching**
+  the report, so even real data never loaded on those paths (only the auto-open after call-end
+  fetched it).
+- **How:**
+  - **Backend (`services/consolidated_report.py`):** compute `interview_qa_score` = average AI
+    accuracy across the questions actually evaluated this interview (+ `evaluated_questions_count`),
+    `None` when nothing was evaluated. Added both to the report dict and a new "Interview Q&A Score"
+    line to the PDF banner; the PDF's absent-value labels made honest ("Not Scored" / "Pending" /
+    "No decision").
+  - **Frontend (`interview/interviewer/[token]/page.tsx`):** both "View Consolidated Scorecard"
+    buttons now call `loadConsolidatedReport` (fetch then open). Modal metrics rebuilt to 4 tiles —
+    **Interview Score** (real, with "N answers scored"), AI Fit (Resume), Proctoring, Interviewer
+    Read — each showing an honest state ("—/No answers evaluated", "Not scored", "Pending",
+    "Pending") in muted grey instead of a fake number. Per-question accuracy shows "—" when null
+    instead of `85`.
+  - Note: "30/100 · Strong Pass" seen in the old card is real data — the AI accuracy (30) beside the
+    rating the **interviewer** clicked (Strong Pass); not a bug, just interviewer input.
+- **Verification:** backend `py_compile` OK; `build_consolidated_report` over real sessions returns
+  real `interview_qa_score` (e.g. 55.0 from 2 answers, None when none) + builds the PDF; frontend
+  `tsc` 0, eslint clean (pre-existing page errors only); services healthy after restart. **Live
+  check pending (manual).**
+
+### 2026-11-19 — Feature: answer-driven follow-up questions (understand the response, suggest 1–3)
+- **What:** The live answer evaluator now (a) works with OR without an active question, (b) suggests
+  **up to 3 ranked follow-ups** grounded in what the candidate actually said (not just a missing
+  keyword), and (c) each follow-up is **clickable → becomes the Active Question**. Builds on the
+  instant `candidate_turn` trigger from the streaming-transcription feature.
+- **Why:** The old `/evaluate-live-answer` produced a single follow-up and only ran when a suggested
+  question was selected — so during open conversation it did nothing. User wanted the system to
+  understand the candidate's response and suggest follow-ups from it.
+- **How — backend (`services/answer_evaluator.py`):** two modes, still ONE OpenAI call per turn.
+  *Question mode* (question present): existing scoring + `suggested_followups` (array 1–3) grounded
+  in the answer. *Free-form mode* (no question): new `FREEFORM_FOLLOWUP_TOOL` returns an
+  `understanding` (what they claimed) + 1–3 follow-ups; scoring fields come back null/empty. One
+  normalized response shape via `_shape(...)` with a `mode` field; `suggested_followup` (singular)
+  kept = `followups[0]` for back-compat. Graceful heuristic fallback on API failure, per mode.
+  `EvaluateLiveAnswerRequest.question_id/question_text` made Optional (`schemas/interview.py`); the
+  route passes them through unchanged.
+- **How — frontend (`interview/interviewer/[token]/page.tsx`):** `AnswerEvaluation` gained `mode` +
+  `suggested_followups` (accuracy/verdict/depth now nullable). `runAnswerEvaluation` no longer bails
+  without an active question — it sends the question fields only when one is selected, else free-form.
+  The instant `onCandidateTurn` trigger now skips trivial turns (<6 words) to cap cost. New
+  `askFollowup(text)` promotes a follow-up to the Active Question. UI: the Active Question card lists
+  up to 3 clickable follow-ups; a new "💡 Live Follow-ups" box (with a "They said:" understanding
+  line) shows when no question is active.
+- **Verification:** backend `py_compile` OK; functional test of both modes against the real API —
+  question mode scored a vague answer 10/superficial with probing follow-ups; free-form produced an
+  accurate understanding + 3 sharp follow-ups ("super fast" → "how did you measure performance?").
+  Frontend `tsc` 0; eslint clean (pre-existing page errors only); both services healthy after
+  restart. **Live call test pending (manual).**
+
+### 2026-11-18 — Feature: instant streaming live transcription (Route A) + instant follow-ups
+- **What:** Replaced the ~12s-latency live transcript (12s audio chunks → upload → transcribe →
+  2.5s poll) with **sub-second streaming** over a WebSocket, and made the interviewer's suggested
+  **follow-up** fire the instant a candidate finishes a turn instead of on a 3.5s debounce. Behind a
+  feature flag, with the old chunk pipeline kept as an automatic fallback.
+- **Why:** User reported the transcript lagged badly; wanted it instant plus live follow-up
+  questions off the candidate's answers.
+- **How — architecture (backend relay, API key never leaves the server):** each interview side opens
+  `WS /interviews/{id}/ws/transcribe?token=..&role=..`; the backend relays that side's mic (PCM16
+  mono 24kHz) to a per-connection OpenAI realtime transcription session and fans transcript events
+  to the interviewer's socket. Mirrors `signaling.py` (query-param token auth via the shared
+  `_authorize`, in-memory per-session room registry, single-process assumption).
+- **OpenAI protocol (verified end-to-end against the account's key, not just docs):** GA shape —
+  `wss://api.openai.com/v1/realtime?intent=transcription`, `Authorization` header ONLY (the
+  `OpenAI-Beta: realtime=v1` header is rejected as `beta_api_shape_disabled`); configure with
+  `session.update` type `transcription`, audio `{type:"audio/pcm",rate:24000}` + transcription
+  model. Model **`gpt-live-transcribe`** streams word-by-word *during* speech (~1.4s first word);
+  `gpt-4o-transcribe`/`-mini` only emit after the turn ends (~7s). The live model emits ONLY
+  `conversation.item.input_audio_transcription.delta` under one constant `item_id` — no completion
+  or VAD events — so **turn finalization is ours**: finalize on a ~1.5s gap in the delta stream.
+- **Files (backend):** new `services/realtime_transcribe.py` (async `websockets` client; yields
+  typed `(delta|final, text)` events; no new deps — `websockets` ships with `uvicorn[standard]`);
+  new `api/v1/live_transcribe.py` (WS relay: uplink audio→OpenAI, downlink→interviewer, silence
+  finalizer, candidate-turn signal, fallback on flag-off/connect-fail/upstream-drop; reuses
+  `interviews._append_live_transcript_item` / `_live_timeline_offset_ms` and
+  `transcription._looks_hallucinated`); registered in `api/v1/__init__.py`; two config fields in
+  `core/config.py` (`openai_realtime_model="gpt-live-transcribe"`,
+  `live_realtime_transcription_enabled=True`).
+- **Files (frontend):** new `public/worklets/pcm-downsampler.js` (AudioWorklet: Float32→PCM16,
+  downsample to 24kHz, 40ms frames); new `lib/useRealtimeTranscribe.ts` (mic→worklet→WS, renders
+  streaming deltas/finals, `onCandidateTurn` trigger, `fellBack` to revert to chunk path);
+  `components/LiveTranscriptFeed.tsx` gained an `interims` prop (live "typing" bubble, keeps the
+  TYH-017 panel-only scroll); interviewer page uses the realtime hook as the display source + fires
+  `runAnswerEvaluation` instantly on `candidate_turn` (poll + chunk `useLiveSpeech` + 3.5s debounce
+  now run only when `fellBack`); candidate page streams via the realtime hook, `useLiveSpeech` only
+  when `fellBack`.
+- **Cost note:** realtime is billed per minute of audio for BOTH sides for the whole call
+  (materially more than the chunk path). Flag off → everything falls back to the chunk pipeline.
+- **Verification:** backend `py_compile` OK + import check (route registered, 80 api routes); live
+  probes confirmed GA shape/model/events; **full backend WS relay integration test** against an
+  existing session streamed TTS speech on a candidate socket and the interviewer socket received 18
+  streaming deltas → accurate `final` → `candidate_turn` (no DB writes). Frontend `tsc` 0; `eslint`
+  clean on both new files (pre-existing page errors unchanged); worklet served 200
+  `application/javascript`; both services healthy after restart. **Live 2-browser call test pending
+  (manual).**
+
+### 2026-11-18 — TYH-017: Live Transcript scrolled the whole page instead of just the panel
+- **What:** In the interviewer Command Center, each new live-transcript line now auto-scrolls
+  **only inside the transcript panel**; the rest of the page stays put.
+- **Why (root cause):** `LiveTranscriptFeed` auto-scrolled with
+  `bottomRef.scrollIntoView({ behavior: "smooth" })`. `scrollIntoView` brings the target into
+  view by scrolling *every* scrollable ancestor — including the page/window — so on each
+  incoming chunk the whole Command Center jumped upward.
+- **How:** Put a ref on the panel's own scroll container (the `overflow-y-auto max-h-[360px]`
+  div) and scroll it with `el.scrollTo({ top: el.scrollHeight })` instead of `scrollIntoView`,
+  which can only move that one element. Added a "near bottom" guard (within 80px) so scrolling
+  up to re-read earlier dialogue isn't yanked back down by the next line. Removed the now-unused
+  `bottomRef` sentinel div.
+- **Files:** `frontend/src/components/LiveTranscriptFeed.tsx`.
+- **Verification:** `tsc --noEmit` exit 0; `eslint` on the file exit 0. Only usage is the
+  interviewer page; it was the only `scrollIntoView` in the frontend. Live scroll behavior to be
+  confirmed in manual test.
+
+### 2026-11-18 — TYH-018: validate the Identity check (no more false "recorded successfully")
+- **What:** The candidate Identity check now validates its fields. The voice recorder only
+  reports success when real audio was captured; submission requires a non-empty ID, a liveness
+  capture that actually detected motion, and an audible voice sample. Added a non-blocking
+  "sounds faint" hint, and a backend guard against empty uploads.
+- **Why (root cause):** `recordVoiceSnippet`'s `onstop` unconditionally set the blob and showed
+  "Voice sample recorded successfully!" with no check that anything was recorded — a silent/empty
+  capture (muted mic, no audio) still passed. The Continue button only checked each field
+  *existed*, not that it had content, and never required liveness to pass.
+- **How:**
+  - New `audioLoudnessRms()` decodes the sample and computes RMS. Below `VOICE_SILENCE_FLOOR`
+    (0.005) → rejected as silent ("we couldn't hear anything"); below `VOICE_QUIET_HINT` (0.02)
+    → accepted with a faint hint; otherwise success. Floor is deliberately low so a **noisy room
+    still passes** — we don't false-reject on ambient noise (voice-match quality stays a
+    human-review signal downstream, never an auto-reject). If decode fails, falls back to a size
+    check. `voiceBlob` is only set once the sample clears the silence check.
+  - `submit()` now validates ID + liveness-passed + audible voice with a clear message; the
+    Continue button is gated on all of them (including `livenessPassed`).
+  - Backend `/identity-check` rejects empty `id_document` / `selfie` / `voice_enrollment` (422)
+    so a direct API call can't store empty files as "verified".
+- **Files:** `frontend/src/app/interview/[token]/page.tsx`, `backend/app/api/v1/interviews.py`.
+- **Verification:** backend `py_compile` clean; frontend `tsc --noEmit` 0; no new eslint
+  (pre-existing impure-render/ref lint untouched). Pending HR manual test.
+
+### 2026-11-18 — TYH-019: remove the misleading "close tab" buttons on interview finish
+- **What:** Removed the tab-closing buttons from both interview finish screens — the candidate
+  "Close" button, the interviewer in-call "Close this tab" button, and the scorecard
+  "Finish & Close Tab" button — replacing each with a static, honest line ("You can close this
+  tab when you're done…"). The scorecard's "Close" (dismisses the overlay) and "Download PDF"
+  stay. Removed the now-dead `handleClose`/`handleCloseTab`/`closeFailed` code.
+- **Why (not fixable):** TYH-019 asked for the tab to close automatically, but a tab opened from
+  a pasted interview link is **not script-closable** — Chrome (by security design) refuses
+  `window.close()` for any tab a script didn't open via `window.open()`. No code can force it.
+  The old buttons therefore promised something the browser forbids and just surfaced a "close it
+  yourself" message, which read as broken. Honest static text resolves the confusion.
+- **Files:** `frontend/src/app/interview/[token]/page.tsx`,
+  `frontend/src/app/interview/interviewer/[token]/page.tsx`.
+- **Verification:** `tsc --noEmit` 0; no new eslint (pre-existing call-timer/ref lint untouched).
+  Pending HR manual test.
+
+### 2026-11-17 — TYH-020: Job Title on Schedule Interview → AI-suggested Q&A + Refresh
+- **What:** The "Schedule an interview" form now captures a **Job Title** (required text field).
+  It's stored on the interview session and used to tailor the interviewer panel's AI-suggested
+  questions. Added a **Refresh** button in the panel's question bank that re-rolls a fresh set.
+- **Why:** TYH-020 — scheduling only captured a candidate name, so with no linked Job the AI
+  fell back to a generic "Technical Specialist" and produced generic questions.
+- **How:**
+  - Backend: new nullable `job_title` column on `interview_sessions` (model + idempotent
+    `ADD COLUMN IF NOT EXISTS` in both the Postgres and SQLite startup migrations). `SessionCreate`
+    /`SessionOut` carry `job_title`; `create_session` persists it. The suggested-questions route
+    now prefers a linked Job's title, else the typed `job_title`, else the fallback, and takes a
+    `refresh` query param that bypasses the in-memory cache. `generate_suggested_questions` gained
+    a `vary` flag that raises temperature + drops the fixed seed so Refresh returns a genuinely
+    different set.
+  - Frontend: required "Job title" field on `interviews/new` (sent as `job_title`); interviewer
+    panel's question fetch extracted into `loadSuggestedQuestions(refresh)` with a Refresh button
+    and a refreshing state.
+  - **Report:** the consolidated evaluation report/PDF showed "Role / Job: N/A" because it only
+    read a linked Job's title. It now falls back to the typed `session.job_title`, and the
+    on-screen scorecard modal header shows "· Role: <title>" too.
+- **Files:** `backend/app/models/interview.py`, `backend/app/schemas/interview.py`,
+  `backend/app/api/v1/interviews.py`, `backend/app/services/question_generator.py`,
+  `backend/app/services/consolidated_report.py`, `backend/app/main.py`;
+  `frontend/src/lib/types.ts`, `frontend/src/app/interviews/new/page.tsx`,
+  `frontend/src/app/interview/interviewer/[token]/page.tsx`.
+- **Verification:** backend `py_compile` clean; `job_title` column confirmed in DB; frontend
+  `tsc --noEmit` 0, no new eslint issues; app restarted healthy. Pending HR manual test.
+
 ### 2026-11-16 — Ad-hoc: "Finish & Close Tab" showed a failure message on the scorecard
 - **What:** On the interviewer Consolidated Evaluation Scorecard, clicking **Finish & Close
   Tab** left a greyed "Can't close this automatically — go ahead and close the tab yourself"
