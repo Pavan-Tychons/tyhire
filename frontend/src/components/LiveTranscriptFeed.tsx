@@ -23,11 +23,23 @@ export default function LiveTranscriptFeed({
   interviewerCapturing = false,
   className = "",
 }: LiveTranscriptFeedProps) {
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const hasInterim = Boolean(interims.candidate || interims.interviewer);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [items, interviewerCapturing]);
+    // TYH-017: scroll ONLY this transcript panel, never the page. The previous
+    // bottomRef.scrollIntoView() scrolled the nearest scrollable ancestor — i.e. the whole
+    // interviewer Command Center page — up on every incoming line. Setting scrollTop on the
+    // panel's own container keeps the rest of the page fixed.
+    const el = scrollRef.current;
+    if (!el) return;
+    // Only auto-follow when the viewer is already at/near the bottom, so scrolling up to
+    // re-read earlier dialogue isn't yanked back down the moment the next chunk arrives.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    }
+  }, [items, interviewerCapturing, interims.candidate, interims.interviewer]);
 
   return (
     <div className={`flex flex-col bg-surface border border-zinc-200 rounded-xl p-3.5 text-sm text-zinc-900 shadow-sm ${className}`}>
@@ -42,8 +54,8 @@ export default function LiveTranscriptFeed({
         <span className="text-[11px] text-zinc-400 font-mono">Real-time STT</span>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[360px] pr-1">
-        {items.length === 0 && !interviewerCapturing ? (
+      <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-2.5 max-h-[360px] pr-1">
+        {items.length === 0 && !interviewerCapturing && !hasInterim ? (
           <div className="flex flex-col items-center justify-center py-12 text-center text-zinc-400">
             <p className="text-xs font-medium">🎙️ Listening to conversation…</p>
             <p className="text-[11px] text-zinc-400 mt-1">
@@ -86,8 +98,6 @@ export default function LiveTranscriptFeed({
             <span className="italic font-medium">Recording…</span>
           </div>
         )}
-
-        <div ref={bottomRef} />
       </div>
     </div>
   );
