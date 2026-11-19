@@ -545,17 +545,6 @@ export default function InterviewerCapturePage() {
     setTimeout(loadConsolidatedReport, 1000);
   }
 
-  function handleCloseTab() {
-    // A tab opened from a copied interviewer link is not "script-closable", so browsers
-    // (Chrome in particular) silently refuse window.close() for security — only a tab that
-    // JS opened via window.open() can be closed this way. Attempt it anyway (it works when the
-    // tab was script-opened); if we're still here a moment later, switch to a clean "all done"
-    // confirmation instead of leaving what looks like an error. The teardown that matters
-    // (camera/mic/screen-share) already happened when the call ended.
-    window.close();
-    setTimeout(() => setCloseFailed(true), 300);
-  }
-
   function toggleMic() {
     setMicMuted(webrtcApiRef.current?.toggleMic() ?? false);
   }

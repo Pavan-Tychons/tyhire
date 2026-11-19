@@ -163,7 +163,6 @@ function ConsentScreen({ onAccept }: { onAccept: () => void }) {
   );
 }
 
-function IdentityCheck({
 // Voice-sample loudness gates (TYH-018). RMS is 0..1; pure silence / a muted mic sits near 0,
 // normal speech is ~0.05-0.2. The floor only rejects genuine silence so noisy real-world rooms
 // still pass; the hint flags a faint-but-usable sample without blocking submission.
