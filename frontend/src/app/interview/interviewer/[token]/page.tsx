@@ -33,14 +33,20 @@ export interface SuggestedQuestion {
 }
 
 export interface AnswerEvaluation {
-  accuracy_score: number;
-  verdict: "strong" | "partially_correct" | "superficial" | "inaccurate" | "scripted_delivery";
+  // "question" = scored against the active question; "freeform" = understood from the answer alone
+  // (no active question), so scoring fields are null/empty and hr_summary is the understanding.
+  mode: "question" | "freeform";
+  accuracy_score: number | null;
+  verdict: "strong" | "partially_correct" | "superficial" | "inaccurate" | "scripted_delivery" | null;
   concepts_covered: string[];
   concepts_missing: string[];
-  depth_rating: "deep" | "adequate" | "surface";
+  depth_rating: "deep" | "adequate" | "surface" | null;
   fluff_detected: boolean;
   teleprompter_speech_flag: boolean;
   hr_summary: string;
+  /** Up to 3 ranked follow-ups, best first. */
+  suggested_followups: string[];
+  /** Back-compat: the first follow-up. */
   suggested_followup: string;
 }
 
@@ -378,12 +384,17 @@ export default function InterviewerCapturePage() {
 
     setEvaluatingAnswer(true);
     try {
-      const evalResult = await postJson<AnswerEvaluation>(`/interviews/${session.id}/evaluate-live-answer`, {
-        question_id: activeQuestion.id,
-        question_text: activeQuestion.question,
-        expected_concepts: activeQuestion.expected_concepts,
-        candidate_transcript: candidateSpeech,
-      });
+      const evalResult = await postJson<AnswerEvaluation>(
+        `/interviews/${session.id}/evaluate-live-answer`,
+        activeQuestion
+          ? {
+              question_id: activeQuestion.id,
+              question_text: activeQuestion.question,
+              expected_concepts: activeQuestion.expected_concepts,
+              candidate_transcript: candidateSpeech,
+            }
+          : { candidate_transcript: candidateSpeech }
+      );
       setActiveEvaluation(evalResult);
     } catch {
       // Degrade gracefully
@@ -392,14 +403,36 @@ export default function InterviewerCapturePage() {
     }
   }, [session, activeQuestion, allTranscripts]);
 
-  // Debounced answer evaluation when new transcripts arrive
+  // Promote a suggested follow-up to the Active Question so the next answer is evaluated against it.
+  const askFollowup = useCallback((text: string) => {
+    setActiveQuestion({
+      id: `followup-${Date.now()}`,
+      category: "Follow-up",
+      question: text,
+      context_reason: "Adaptive follow-up from the candidate's answer",
+      expected_concepts: [],
+      difficulty: "intermediate",
+    });
+    setActiveEvaluation(null);
+    setActiveTab("questions");
+  }, []);
+
+  // Let the realtime onCandidateTurn trigger call the latest runAnswerEvaluation without
+  // re-opening the transcription socket on every render.
   useEffect(() => {
-    if (!activeQuestion || allTranscripts.length === 0) return;
+    runEvalRef.current = runAnswerEvaluation;
+  }, [runAnswerEvaluation]);
+
+  // Debounced answer evaluation — fallback path only. With realtime streaming, evaluation fires
+  // instantly from onCandidateTurn the moment the candidate finishes a turn, so this debounce is
+  // disabled to avoid duplicate (billed) evaluation calls.
+  useEffect(() => {
+    if (!realtimeFellBack || !activeQuestion || allTranscripts.length === 0) return;
     const timer = setTimeout(() => {
       runAnswerEvaluation();
     }, 3500);
     return () => clearTimeout(timer);
-  }, [allTranscripts, activeQuestion, runAnswerEvaluation]);
+  }, [realtimeFellBack, allTranscripts, activeQuestion, runAnswerEvaluation]);
 
   async function handleRateQuestion(rating: "strong_pass" | "needs_followup" | "inaccurate_scripted") {
     if (!session || !activeQuestion) return;
@@ -823,6 +856,39 @@ export default function InterviewerCapturePage() {
               )}
             </div>
 
+            {/* Live follow-ups when no question is active — driven purely by the candidate's answer.
+                Click one to promote it to the Active Question. */}
+            {!activeQuestion && activeEvaluation?.mode === "freeform" && (
+              <div className="bg-surface border border-zinc-200 rounded-xl p-4 space-y-2 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700">
+                    💡 Live Follow-ups
+                  </span>
+                  {evaluatingAnswer && (
+                    <span className="text-[11px] text-zinc-400 italic">reading answer…</span>
+                  )}
+                </div>
+                {activeEvaluation.hr_summary && (
+                  <p className="text-[11px] text-zinc-600 leading-relaxed">
+                    <strong className="text-zinc-700">They said:</strong> {activeEvaluation.hr_summary}
+                  </p>
+                )}
+                <div className="space-y-1">
+                  {activeEvaluation.suggested_followups.map((f, i) => (
+                    <button
+                      key={i}
+                      onClick={() => askFollowup(f)}
+                      title="Click to ask this as the next question"
+                      className="w-full text-left px-2 py-1.5 rounded-md bg-indigo-50/70 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-400 text-[11px] text-indigo-900 transition-all flex items-start gap-1.5"
+                    >
+                      <span className="font-bold text-indigo-500">{i + 1}.</span>
+                      <span>{f}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Active Question & "Then and There" Instant Decision Bar */}
             {activeQuestion && (
               <div className="bg-surface border border-zinc-200 rounded-xl p-4 space-y-3 shadow-xs">
@@ -838,7 +904,7 @@ export default function InterviewerCapturePage() {
                     >
                       {evaluatingAnswer ? "Evaluating…" : "⚡ Evaluate Answer"}
                     </button>
-                    {activeEvaluation && (
+                    {activeEvaluation && activeEvaluation.accuracy_score != null && (
                       <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 shadow-2xs">
                         Accuracy: {activeEvaluation.accuracy_score.toFixed(0)}/100
                       </span>
@@ -867,11 +933,23 @@ export default function InterviewerCapturePage() {
                   })}
                 </div>
 
-                {/* Adaptive Follow-up Prompt */}
-                {activeEvaluation?.suggested_followup && (
-                  <div className="p-2.5 rounded-lg bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900">
-                    <strong className="text-indigo-700 font-bold">💡 Suggested Follow-up: </strong>
-                    {activeEvaluation.suggested_followup}
+                {/* Adaptive Follow-ups — click one to make it the Active Question */}
+                {activeEvaluation && activeEvaluation.suggested_followups.length > 0 && (
+                  <div className="p-2.5 rounded-lg bg-indigo-50 border border-indigo-200 text-[11px] text-indigo-900 space-y-1.5">
+                    <strong className="text-indigo-700 font-bold">💡 Suggested Follow-ups</strong>
+                    <div className="space-y-1">
+                      {activeEvaluation.suggested_followups.map((f, i) => (
+                        <button
+                          key={i}
+                          onClick={() => askFollowup(f)}
+                          title="Click to ask this as the next question"
+                          className="w-full text-left px-2 py-1.5 rounded-md bg-white/70 hover:bg-white border border-indigo-200 hover:border-indigo-400 transition-all flex items-start gap-1.5"
+                        >
+                          <span className="font-bold text-indigo-500">{i + 1}.</span>
+                          <span>{f}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
 

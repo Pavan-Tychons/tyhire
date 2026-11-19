@@ -184,8 +184,10 @@ class SendConsolidatedReportRequest(BaseModel):
 
 
 class EvaluateLiveAnswerRequest(BaseModel):
-    question_id: str
-    question_text: str
+    # Optional: when omitted the evaluator runs in free-form mode (understand the candidate's words
+    # and suggest follow-ups) instead of scoring against a specific question.
+    question_id: Optional[str] = None
+    question_text: Optional[str] = None
     expected_concepts: list[str] = []
     candidate_transcript: str
 
