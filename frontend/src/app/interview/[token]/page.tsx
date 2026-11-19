@@ -13,6 +13,7 @@ import {
   requestFullscreen,
 } from "@/lib/fullscreen";
 import { useLiveSpeech } from "@/lib/useLiveSpeech";
+import { useRealtimeTranscribe } from "@/lib/useRealtimeTranscribe";
 import type { InterviewSession, SignalType } from "@/lib/types";
 
 type Stage =
@@ -709,11 +710,21 @@ function InterviewRecorder({
     }
   }
 
-  // Live Speech Recognition: stream candidate's speech to interviewer live transcript panel
+  // Stream the candidate's speech to the interviewer's live transcript panel. Preferred path is
+  // instant realtime streaming (upload-only here; the text is shown on the interviewer side); if
+  // the backend realtime path is unavailable it falls back to the chunk-upload path below.
+  // startedAtMs is omitted on purpose: this side is upload-only, so the displayed offset (computed
+  // on the interviewer side) is irrelevant here, and reading startRef during render isn't needed.
+  const { fellBack: realtimeFellBack } = useRealtimeTranscribe({
+    sessionId: session.id,
+    role: "candidate",
+    enabled: true,
+    token: session.join_token,
+  });
   useLiveSpeech({
     sessionId: session.id,
     speaker: "candidate",
-    enabled: true,
+    enabled: realtimeFellBack,
     startedAtMs: startRef.current,
     authToken: session.join_token,
     tokenHeaderKey: "X-Interview-Token",

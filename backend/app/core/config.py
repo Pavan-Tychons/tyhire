@@ -5,6 +5,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://hr_tool:hr_tool@localhost:5432/hr_tool"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
+
+    # Realtime streaming live transcription (api/v1/live_transcribe.py). gpt-live-transcribe
+    # streams text word-by-word *during* speech (~1.4s to first word), which is what makes the
+    # live transcript feel instant; gpt-4o-transcribe only emits after a turn ends (~7s) and is
+    # the model the ~12s chunk-upload fallback path already uses. When the flag is off (or the
+    # realtime WS fails to connect) clients transparently fall back to that chunk path, so turning
+    # this off is safe. Realtime is billed per minute of audio for BOTH sides of the call.
+    openai_realtime_model: str = "gpt-live-transcribe"
+    live_realtime_transcription_enabled: bool = True
     storage_root: str = "../storage"
     cors_origins: list[str] = ["http://localhost:3000"]
 

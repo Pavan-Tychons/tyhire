@@ -6,8 +6,13 @@ import type { LiveTranscriptItem } from "@/lib/useLiveSpeech";
 interface LiveTranscriptFeedProps {
   items: LiveTranscriptItem[];
   /** True while the interviewer's own next chunk is actively being recorded — there's no
-   * live partial transcript text to show anymore (see useLiveSpeech), just a status. */
+   * live partial transcript text to show anymore (see useLiveSpeech), just a status.
+   * Only used by the chunk-upload fallback path. */
   interviewerCapturing?: boolean;
+  /** Realtime path only: the in-progress (not-yet-finalized) line per speaker, rendered as a live
+   * "typing" bubble that updates word-by-word and disappears once the turn is finalized into
+   * `items`. Empty strings render nothing. */
+  interims?: { candidate: string; interviewer: string };
   className?: string;
 }
 
@@ -21,6 +26,7 @@ function formatOffset(ms: number): string {
 export default function LiveTranscriptFeed({
   items,
   interviewerCapturing = false,
+  interims = { candidate: "", interviewer: "" },
   className = "",
 }: LiveTranscriptFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -88,6 +94,34 @@ export default function LiveTranscriptFeed({
               <p className="leading-relaxed whitespace-pre-wrap font-medium">{item.text}</p>
             </div>
           ))
+        )}
+
+        {(["candidate", "interviewer"] as const).map((speaker) =>
+          interims[speaker] ? (
+            <div
+              key={`interim-${speaker}`}
+              className={`p-2.5 rounded-xl text-xs border border-dashed transition-all ${
+                speaker === "candidate"
+                  ? "bg-blue-50/50 border-blue-300 text-blue-950"
+                  : "bg-purple-50/50 border-purple-300 text-purple-950"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span
+                  className={`font-bold uppercase text-[10px] px-2 py-0.5 rounded-full ${
+                    speaker === "candidate" ? "bg-blue-600 text-white" : "bg-purple-600 text-white"
+                  }`}
+                >
+                  {speaker === "candidate" ? "Candidate" : "Interviewer"}
+                </span>
+                <span className="text-[10px] text-zinc-400 font-mono italic">live…</span>
+              </div>
+              <p className="leading-relaxed whitespace-pre-wrap font-medium opacity-80">
+                {interims[speaker]}
+                <span className="animate-pulse">▌</span>
+              </p>
+            </div>
+          ) : null
         )}
 
         {interviewerCapturing && (

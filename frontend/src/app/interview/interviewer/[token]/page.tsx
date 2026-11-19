@@ -8,6 +8,7 @@ import { useDialog } from "@/components/Dialog";
 import WebRTCRoom, { type WebRTCApi } from "@/components/WebRTCRoom";
 import LiveTranscriptFeed from "@/components/LiveTranscriptFeed";
 import { useLiveSpeech, type LiveTranscriptItem } from "@/lib/useLiveSpeech";
+import { useRealtimeTranscribe } from "@/lib/useRealtimeTranscribe";
 import { exitFullscreen, isFullscreenActive, onFullscreenChange } from "@/lib/fullscreen";
 import type { FacialAffectAnalysis, InterviewSession, LiveSignalEvent, SignalType, VoiceToneAnalysis } from "@/lib/types";
 
@@ -190,15 +191,41 @@ export default function InterviewerCapturePage() {
     return () => clearInterval(timer);
   }, [joined, callEnded, callStartTime]);
 
-  // Browser-agnostic live transcript capture for the interviewer's own side — records and
-  // uploads short chunks for server-side transcription rather than relying on the browser's
-  // own (Chromium-only, unreliable) SpeechRecognition API. isCapturing just drives a
-  // "recording…" indicator; the actual text comes back through the live-transcripts poll
-  // below once the backend finishes transcribing each chunk.
+  // Instant streaming transcription (Route A). This interviewer socket streams the interviewer's
+  // own mic AND receives both speakers' transcript events pushed back, so `realtimeFinals` /
+  // `realtimeInterims` are the live display source. `onCandidateTurn` fires the moment a candidate
+  // utterance is finalized, so answer evaluation (and its suggested follow-up) runs instantly
+  // instead of waiting for the poll debounce. If the backend realtime path is off/unavailable,
+  // `realtimeFellBack` flips true and the chunk-upload path + poll below take over.
+  const runEvalRef = useRef<((text: string) => void) | null>(null);
+  const candidateTextRef = useRef("");
+  const {
+    finals: realtimeFinals,
+    interims: realtimeInterims,
+    fellBack: realtimeFellBack,
+  } = useRealtimeTranscribe({
+    sessionId: session?.id,
+    role: "interviewer",
+    enabled: joined && !callEnded,
+    token: session?.interviewer_join_token ?? undefined,
+    startedAtMs: callStartTime,
+    onCandidateTurn: (text) => {
+      // Skip trivial turns ("yes", "okay, sure") — now that this also runs free-form on every
+      // candidate turn, a word-count floor keeps the per-turn evaluation cost in check.
+      if (text.trim().split(/\s+/).filter(Boolean).length < 6) return;
+      // Evaluate the full answer so far (prior turns + this one), not just the last sentence.
+      const full = `${candidateTextRef.current} ${text}`.trim();
+      runEvalRef.current?.(full || text);
+    },
+  });
+
+  // Chunk-upload fallback — only captures the interviewer's audio when realtime fell back. The
+  // actual text then comes back through the live-transcripts poll below. `isCapturing` drives the
+  // "recording…" indicator in that mode.
   const { isCapturing: interviewerCapturing } = useLiveSpeech({
     sessionId: session?.id,
     speaker: "interviewer",
-    enabled: joined && !callEnded,
+    enabled: joined && !callEnded && realtimeFellBack,
     startedAtMs: callStartTime,
     authToken: session?.interviewer_join_token ?? undefined,
     tokenHeaderKey: "X-Interviewer-Token",
@@ -303,9 +330,10 @@ export default function InterviewerCapturePage() {
     return () => clearInterval(interval);
   }, [session, callEnded]);
 
-  // Live transcripts polling from backend
+  // Live transcripts polling — only the fallback path. When realtime streaming is working the
+  // transcript arrives over the WebSocket (realtimeFinals), so there's no need to poll.
   useEffect(() => {
-    if (!session || callEnded) return;
+    if (!session || callEnded || !realtimeFellBack) return;
     const poll = () =>
       getJson<LiveTranscriptItem[]>(`/interviews/${session.id}/live-transcripts`)
         .then((items) => {
@@ -317,15 +345,24 @@ export default function InterviewerCapturePage() {
     poll();
     const interval = setInterval(poll, 2500);
     return () => clearInterval(interval);
-  }, [session, callEnded]);
+  }, [session, callEnded, realtimeFellBack]);
 
-  // The only source now — both sides upload chunks for server-side transcription and this
-  // polls the merged result back; neither side produces any transcript text locally anymore.
-  const allTranscripts = mergedLiveTranscripts;
+  // Display source: streamed finals when realtime works, polled chunks when it fell back.
+  const allTranscripts = realtimeFellBack ? mergedLiveTranscripts : realtimeFinals;
 
-  // Real-time answer evaluation trigger
+  // Keep the running candidate answer current for the instant onCandidateTurn trigger above.
+  useEffect(() => {
+    candidateTextRef.current = allTranscripts
+      .filter((t) => t.speaker === "candidate")
+      .map((t) => t.text)
+      .join(" ");
+  }, [allTranscripts]);
+
+  // Real-time answer evaluation + follow-up suggestion. Runs in question mode when a question is
+  // active (scores against it) and free-form otherwise (understands the answer and suggests
+  // follow-ups from it alone).
   const runAnswerEvaluation = useCallback(async (customSpeech?: string) => {
-    if (!session || !activeQuestion) return;
+    if (!session) return;
 
     let candidateSpeech = customSpeech;
     if (!candidateSpeech) {
@@ -1100,6 +1137,7 @@ export default function InterviewerCapturePage() {
                   <LiveTranscriptFeed
                     items={allTranscripts}
                     interviewerCapturing={interviewerCapturing}
+                    interims={realtimeInterims}
                     className="h-[390px]"
                   />
                   {/* Quick Speech / Utterance Entry Bar */}
