@@ -56,6 +56,7 @@ def generate_suggested_questions(
     required_skills: list[str],
     candidate_profile: dict[str, Any] | None = None,
     candidate_name: str = "Candidate",
+    vary: bool = False,
 ) -> list[dict[str, Any]]:
     profile_summary = ""
     if candidate_profile:
@@ -74,10 +75,13 @@ Candidate Name: {candidate_name}
 Please generate 6 to 8 structured interview questions with expected key concepts for each."""
 
     try:
+        # When the interviewer asks to refresh (vary=True), raise the temperature and drop the
+        # fixed seed so the model returns a genuinely different set rather than the same one.
         result = call_tool(
             system=SYSTEM_PROMPT,
             user_content=user_content,
             tool=QUESTION_GEN_TOOL,
+            **({"temperature": 0.9, "seed": None} if vary else {}),
         )
         return result.get("questions", [])
     except Exception as exc:

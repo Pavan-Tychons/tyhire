@@ -138,6 +138,7 @@ export default function InterviewerCapturePage() {
 
   // AI-Suggested Questions & Live Answer Evaluation
   const [suggestedQuestions, setSuggestedQuestions] = useState<SuggestedQuestion[]>([]);
+  const [refreshingQuestions, setRefreshingQuestions] = useState(false);
   const [activeQuestion, setActiveQuestion] = useState<SuggestedQuestion | null>(null);
   const [activeEvaluation, setActiveEvaluation] = useState<AnswerEvaluation | null>(null);
   const [evaluatingAnswer, setEvaluatingAnswer] = useState(false);
@@ -216,24 +217,40 @@ export default function InterviewerCapturePage() {
       .catch(() => setError("This interviewer link is invalid or has expired."));
   }, [token]);
 
-  // Fetch AI-suggested questions
-  useEffect(() => {
-    if (!session) return;
-    getJson<SuggestedQuestion[]>(`/interviews/${session.id}/suggested-questions`)
-      .then((questions) => {
+  // Fetch AI-suggested questions (refresh=true re-rolls a fresh set — TYH-020).
+  const loadSuggestedQuestions = useCallback(
+    async (refresh = false) => {
+      if (!session) return;
+      if (refresh) setRefreshingQuestions(true);
+      try {
+        const questions = await getJson<SuggestedQuestion[]>(
+          `/interviews/${session.id}/suggested-questions${refresh ? "?refresh=true" : ""}`
+        );
         if (questions && questions.length > 0) {
           setSuggestedQuestions(questions);
           setActiveQuestion(questions[0]);
         }
-      })
-      .catch(() => {});
+      } catch {
+        // non-fatal — the interviewer can still run the call without suggestions
+      } finally {
+        if (refresh) setRefreshingQuestions(false);
+      }
+    },
+    [session]
+  );
+
+  useEffect(() => {
+    if (!session) return;
+    // Initial load (refresh=false) never sets state synchronously; the static rule can't see that.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadSuggestedQuestions();
 
     getJson<RatedQuestion[]>(`/interviews/${session.id}/qa-evaluations`)
       .then((evals) => {
         if (evals) setRatedQuestions(evals);
       })
       .catch(() => {});
-  }, [session]);
+  }, [session, loadSuggestedQuestions]);
 
   // Live signals polling
   useEffect(() => {
@@ -1007,7 +1024,15 @@ export default function InterviewerCapturePage() {
                 <div className="bg-surface border border-zinc-200 rounded-xl p-3.5 space-y-3 h-[450px] overflow-y-auto shadow-xs">
                   <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
                     <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-700">GPT-Suggested Question Bank</h3>
-                    <span className="text-[10px] text-zinc-500 font-mono">Tailored to Resume & JD</span>
+                    <button
+                      type="button"
+                      onClick={() => loadSuggestedQuestions(true)}
+                      disabled={refreshingQuestions}
+                      title="Generate a fresh set of suggested questions"
+                      className="text-[10px] font-semibold px-2 py-1 rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                    >
+                      {refreshingQuestions ? "Refreshing…" : "↻ Refresh"}
+                    </button>
                   </div>
 
                   <div className="space-y-2">
@@ -1279,7 +1304,10 @@ export default function InterviewerCapturePage() {
                 <h2 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
                   📊 Consolidated Evaluation Scorecard
                 </h2>
-                <p className="text-xs text-zinc-500">Candidate: {session.candidate_name}</p>
+                <p className="text-xs text-zinc-500">
+                  Candidate: {session.candidate_name}
+                  {session.job_title ? ` · Role: ${session.job_title}` : ""}
+                </p>
               </div>
               <button
                 onClick={() => setShowScorecard(false)}

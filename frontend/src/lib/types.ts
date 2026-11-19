@@ -146,6 +146,7 @@ export type SessionStatus =
 export interface InterviewSession {
   id: string;
   candidate_name: string;
+  job_title: string | null;
   job_id: string | null;
   join_token: string;
   video_room_token: string;

@@ -158,6 +158,7 @@ def require_interviewer_token(
 def create_session(payload: SessionCreate, db: Session = Depends(get_db)):
     session = InterviewSession(
         candidate_name=payload.candidate_name,
+        job_title=(payload.job_title or "").strip() or None,
         job_id=payload.job_id,
         candidate_id=payload.candidate_id,
         join_token=secrets.token_urlsafe(16),
@@ -1340,11 +1341,16 @@ def download_consolidated_report_pdf(
 @router.get("/{session_id}/suggested-questions")
 def get_suggested_interview_questions(
     session_id: uuid.UUID,
+    refresh: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Generates or returns cached AI-suggested questions tailored to the candidate and job."""
+    """Generates or returns cached AI-suggested questions tailored to the candidate and job.
+
+    `refresh=true` skips the cache and asks the model for a fresh, different set (TYH-020) —
+    the interviewer's "Refresh" button uses this to re-roll the suggestions.
+    """
     sid = str(session_id)
-    if sid in _session_questions_cache and _session_questions_cache[sid]:
+    if not refresh and sid in _session_questions_cache and _session_questions_cache[sid]:
         return _session_questions_cache[sid]
 
     session = db.get(InterviewSession, session_id)
@@ -1354,7 +1360,9 @@ def get_suggested_interview_questions(
     job = db.get(Job, session.job_id) if session.job_id else None
     candidate = db.get(Candidate, session.candidate_id) if session.candidate_id else None
 
-    job_title = job.title if job else "Technical Specialist"
+    # Prefer a linked Job's title (richest context), else the title typed at scheduling
+    # (TYH-020), else a generic fallback.
+    job_title = (job.title if job else None) or session.job_title or "Technical Specialist"
     jd_text = job.jd_text if job else "Standard technical requirements"
     skills = job.required_skills if job else []
     profile = candidate.parsed_profile if candidate else None
@@ -1365,6 +1373,7 @@ def get_suggested_interview_questions(
         required_skills=skills,
         candidate_profile=profile,
         candidate_name=session.candidate_name,
+        vary=refresh,
     )
     _session_questions_cache[sid] = questions
     return questions

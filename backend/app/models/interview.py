@@ -26,6 +26,9 @@ class InterviewSession(Base):
     )
     candidate_name = Column(String, nullable=False)
     job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=True)
+    # Free-text role title captured at scheduling (TYH-020). Used to tailor AI-suggested
+    # interview questions when the session isn't linked to a full Job record.
+    job_title = Column(String, nullable=True)
 
     join_token = Column(String, unique=True, nullable=False)
     status = Column(Enum(SessionStatus), nullable=False, default=SessionStatus.scheduled)

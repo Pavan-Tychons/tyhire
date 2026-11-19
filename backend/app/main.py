@@ -57,6 +57,7 @@ def on_startup():
     try:
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS qa_evaluations JSONB DEFAULT '[]'::jsonb;"))
+            conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS job_title VARCHAR;"))
             conn.execute(text("ALTER TABLE identity_checks ADD COLUMN IF NOT EXISTS voice_enrollment_path VARCHAR;"))
             conn.execute(text("ALTER TYPE signaltype ADD VALUE IF NOT EXISTS 'voice_mismatch'"))
             conn.execute(text("ALTER TYPE signaltype ADD VALUE IF NOT EXISTS 'ai_extension_detected'"))
@@ -88,6 +89,7 @@ def on_startup():
     db = SessionLocal()
     sqlite_cols = [
         ("interview_sessions", "qa_evaluations", "JSON DEFAULT '[]'"),
+        ("interview_sessions", "job_title", "VARCHAR"),
         ("identity_checks", "voice_enrollment_path", "VARCHAR"),
         ("jobs", "weight_communication", "FLOAT DEFAULT 0.0"),
         ("jobs", "core_skills", "JSON DEFAULT '[]'"),

@@ -8,6 +8,7 @@ from app.models.interview import SessionStatus, SignalType
 
 class SessionCreate(BaseModel):
     candidate_name: str
+    job_title: Optional[str] = None
     job_id: Optional[uuid.UUID] = None
     candidate_id: Optional[uuid.UUID] = None
 
@@ -15,6 +16,7 @@ class SessionCreate(BaseModel):
 class SessionOut(BaseModel):
     id: uuid.UUID
     candidate_name: str
+    job_title: Optional[str] = None
     job_id: Optional[uuid.UUID]
     join_token: str
     video_room_token: str

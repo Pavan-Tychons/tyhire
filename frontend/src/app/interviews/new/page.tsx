@@ -6,6 +6,7 @@ import type { InterviewSession } from "@/lib/types";
 
 export default function NewInterviewPage() {
   const [candidateName, setCandidateName] = useState("");
+  const [jobTitle, setJobTitle] = useState("");
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -15,6 +16,7 @@ export default function NewInterviewPage() {
     try {
       const created = await postJson<InterviewSession>("/interviews", {
         candidate_name: candidateName,
+        job_title: jobTitle.trim(),
       });
       setSession(created);
     } finally {
@@ -46,7 +48,20 @@ export default function NewInterviewPage() {
               className="input"
             />
           </label>
-          <button type="submit" disabled={submitting} className="btn-primary">
+          <label className="block">
+            <span className="block text-sm font-medium mb-1">Job title</span>
+            <input
+              required
+              value={jobTitle}
+              onChange={(e) => setJobTitle(e.target.value)}
+              placeholder="e.g. Senior React Developer"
+              className="input"
+            />
+            <span className="block text-xs text-zinc-500 mt-1">
+              Used to tailor the AI-suggested interview questions for the interviewer.
+            </span>
+          </label>
+          <button type="submit" disabled={submitting || !jobTitle.trim()} className="btn-primary">
             {submitting ? "Creating…" : "Create join link"}
           </button>
         </form>
