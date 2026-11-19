@@ -446,13 +446,19 @@ async def submit_identity_check(
     id_bytes = await id_document.read()
     selfie_bytes = await selfie.read()
 
+    voice_bytes = await voice_enrollment.read() if voice_enrollment else b""
+
+    # Validate server-side too (TYH-018). The client gates these, but a direct API call must not
+    # be able to store an empty ID / selfie / voice sample and have it recorded as "verified".
+    if not id_bytes:
+        raise HTTPException(status_code=422, detail="The ID document upload was empty. Please re-upload a photo of your ID.")
+    if not selfie_bytes:
+        raise HTTPException(status_code=422, detail="The liveness capture was empty. Please retake it.")
+    if not voice_bytes:
+        raise HTTPException(status_code=422, detail="No voice sample was recorded. Please record an audible voice sample before continuing.")
     id_path = storage.save_file(f"interviews/{session.id}", id_document.filename, id_bytes)
     selfie_path = storage.save_file(f"interviews/{session.id}", selfie.filename, selfie_bytes)
-
-    voice_path = None
-    if voice_enrollment:
-        voice_bytes = await voice_enrollment.read()
-        voice_path = storage.save_file(f"interviews/{session.id}", voice_enrollment.filename, voice_bytes)
+    voice_path = storage.save_file(f"interviews/{session.id}", voice_enrollment.filename, voice_bytes)
 
     match = check_identity_match(
         id_bytes, id_document.content_type or "image/jpeg",

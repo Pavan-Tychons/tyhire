@@ -163,6 +163,43 @@ function ConsentScreen({ onAccept }: { onAccept: () => void }) {
 }
 
 function IdentityCheck({
+// Voice-sample loudness gates (TYH-018). RMS is 0..1; pure silence / a muted mic sits near 0,
+// normal speech is ~0.05-0.2. The floor only rejects genuine silence so noisy real-world rooms
+// still pass; the hint flags a faint-but-usable sample without blocking submission.
+const VOICE_SILENCE_FLOOR = 0.005;
+const VOICE_QUIET_HINT = 0.02;
+
+/**
+ * Returns the RMS loudness (0..1) of an audio blob, or -1 if it can't be decoded. Decodes by
+ * content, so the blob's declared MIME type doesn't matter. Used to tell a real recording from
+ * a silent/empty one — MediaRecorder happily produces a non-empty container with no audio when
+ * the mic is muted or unavailable, which is exactly the "recorded successfully but nothing there"
+ * case this guards against.
+ */
+async function audioLoudnessRms(blob: Blob): Promise<number> {
+  try {
+    const buf = await blob.arrayBuffer();
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return -1;
+    const ctx = new Ctx();
+    try {
+      const audio = await ctx.decodeAudioData(buf);
+      const data = audio.getChannelData(0);
+      if (!data.length) return 0;
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+      return Math.sqrt(sum / data.length);
+    } finally {
+      ctx.close();
+    }
+  } catch {
+    return -1;
+  }
+}
+
+function IdentityCheck({
   session,
   onDone,
 }: {
@@ -249,6 +286,7 @@ function IdentityCheck({
 
   async function recordVoiceSnippet() {
     setRecordingVoice(true);
+    setVoiceBlob(null); // clear any previous sample until this one is validated
     setVoiceStatus("Recording for 5 seconds... Speak now!");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -257,17 +295,32 @@ function IdentityCheck({
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
       };
-      recorder.onstop = () => {
-        const audioBlob = new Blob(chunks, { type: "audio/wav" });
-        setVoiceBlob(audioBlob);
-        setVoiceStatus("Voice sample recorded successfully!");
+      recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
+        const audioBlob = new Blob(chunks, { type: "audio/wav" });
+        const rms = await audioLoudnessRms(audioBlob);
+
+        // Reject a silent/empty capture (the TYH-018 bug) — but only genuine silence, so a
+        // noisy room still passes. If we couldn't decode it, fall back to a size sanity check.
+        const silent =
+          rms >= 0 ? rms < VOICE_SILENCE_FLOOR : audioBlob.size < 2000;
+        if (silent) {
+          setVoiceBlob(null);
+          setVoiceStatus(
+            "We couldn't hear anything — please record again and read the sentence aloud."
+          );
+        } else {
+          setVoiceBlob(audioBlob);
+          if (rms >= 0 && rms < VOICE_QUIET_HINT) {
+            setVoiceStatus("Recorded — but it sounds faint. You can re-record in a quieter spot if you like.");
+          } else {
+            setVoiceStatus("Voice sample recorded successfully!");
+          }
+        }
+        setRecordingVoice(false);
       };
       recorder.start();
-      setTimeout(() => {
-        recorder.stop();
-        setRecordingVoice(false);
-      }, 5000);
+      setTimeout(() => recorder.stop(), 5000);
     } catch {
       setVoiceStatus("Microphone access is required to record voice sample.");
       setRecordingVoice(false);
@@ -275,7 +328,15 @@ function IdentityCheck({
   }
 
   async function submit() {
-    if (!idFile || !selfieBlob || !voiceBlob) return;
+    // Validate every field rather than silently no-op'ing (TYH-018): a candidate must have
+    // uploaded an ID, passed the liveness capture (real motion), and recorded an audible voice
+    // sample. voiceBlob is only set once the recording cleared the silence check above.
+    if (!idFile || !selfieBlob || !livenessPassed || !voiceBlob) {
+      setSubmitError(
+        "Please complete every step first: upload your government ID, run the liveness capture until motion is detected, and record an audible voice sample."
+      );
+      return;
+    }
     setChecking(true);
     setSubmitError(null);
     try {
@@ -361,7 +422,7 @@ function IdentityCheck({
 
         <button
           onClick={submit}
-          disabled={!idFile || !selfieBlob || !voiceBlob || checking}
+          disabled={!idFile || !selfieBlob || !livenessPassed || !voiceBlob || checking}
           className="btn-primary"
         >
           {checking ? "Verifying…" : "Continue"}
