@@ -708,7 +708,7 @@ export default function InterviewerCapturePage() {
 
           {callEnded && (
             <button
-              onClick={() => setShowScorecard(true)}
+              onClick={loadConsolidatedReport}
               className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm"
             >
               View Consolidated Scorecard
@@ -991,7 +991,7 @@ export default function InterviewerCapturePage() {
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => setShowScorecard(true)}
+                    onClick={loadConsolidatedReport}
                     className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-2xs"
                   >
                     View Consolidated Scorecard
@@ -1433,24 +1433,43 @@ export default function InterviewerCapturePage() {
               </button>
             </div>
 
-            {/* Scorecard Summary Metrics */}
-            <div className="grid grid-cols-3 gap-3 text-center">
+            {/* Scorecard Summary Metrics — real values only; honest states when data is absent. */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
               <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3">
-                <span className="text-[11px] font-bold text-zinc-500 uppercase">AI Fit Score</span>
-                <p className="text-xl font-extrabold text-blue-600 mt-0.5">
-                  {consolidatedReport?.fit_score != null ? `${Number(consolidatedReport.fit_score).toFixed(0)}/100` : "85/100"}
+                <span className="text-[11px] font-bold text-zinc-500 uppercase">Interview Score</span>
+                {consolidatedReport?.interview_qa_score != null ? (
+                  <>
+                    <p className="text-xl font-extrabold text-blue-600 mt-0.5">
+                      {Number(consolidatedReport.interview_qa_score).toFixed(0)}/100
+                    </p>
+                    <span className="text-[10px] text-zinc-400">
+                      {Number(consolidatedReport.evaluated_questions_count ?? 0)} answer
+                      {Number(consolidatedReport.evaluated_questions_count ?? 0) === 1 ? "" : "s"} scored
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xl font-extrabold text-zinc-400 mt-0.5">—</p>
+                    <span className="text-[10px] text-zinc-400">No answers evaluated</span>
+                  </>
+                )}
+              </div>
+              <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3">
+                <span className="text-[11px] font-bold text-zinc-500 uppercase">AI Fit (Resume)</span>
+                <p className={`text-xl font-extrabold mt-0.5 ${consolidatedReport?.fit_score != null ? "text-zinc-700" : "text-zinc-400"}`}>
+                  {consolidatedReport?.fit_score != null ? `${Number(consolidatedReport.fit_score).toFixed(0)}/100` : "Not scored"}
                 </p>
               </div>
               <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3">
-                <span className="text-[11px] font-bold text-zinc-500 uppercase">Proctoring Rating</span>
-                <p className="text-xl font-extrabold text-emerald-600 mt-0.5">
-                  {consolidatedReport?.integrity_score != null ? `${Number(consolidatedReport.integrity_score).toFixed(0)}/100` : "Clean (100)"}
+                <span className="text-[11px] font-bold text-zinc-500 uppercase">Proctoring</span>
+                <p className={`text-xl font-extrabold mt-0.5 ${consolidatedReport?.integrity_score != null ? "text-emerald-600" : "text-zinc-400"}`}>
+                  {consolidatedReport?.integrity_score != null ? `${Number(consolidatedReport.integrity_score).toFixed(0)}/100` : "Pending"}
                 </p>
               </div>
               <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3">
                 <span className="text-[11px] font-bold text-zinc-500 uppercase">Interviewer Read</span>
-                <p className="text-xl font-extrabold text-purple-600 capitalize mt-0.5">
-                  {decision || "Proceed"}
+                <p className={`text-xl font-extrabold capitalize mt-0.5 ${decision ? "text-purple-600" : "text-zinc-400"}`}>
+                  {decision || "Pending"}
                 </p>
               </div>
             </div>
@@ -1469,7 +1488,9 @@ export default function InterviewerCapturePage() {
                         )}
                       </div>
                       <div className="text-right shrink-0">
-                        <span className="font-bold text-blue-600">{rq.accuracy_score?.toFixed(0) ?? 85}/100</span>
+                        <span className="font-bold text-blue-600">
+                          {rq.accuracy_score != null ? `${rq.accuracy_score.toFixed(0)}/100` : "—"}
+                        </span>
                         <span className="block text-[10px] text-zinc-500 capitalize">{rq.rating.replace("_", " ")}</span>
                       </div>
                     </div>

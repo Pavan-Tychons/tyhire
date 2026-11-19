@@ -50,15 +50,29 @@ def build_consolidated_report(db: Session, session_id: uuid.UUID) -> dict[str, A
     if candidate and candidate.manual_score_adjustment:
         effective_fit_score = max(0.0, min(100.0, (fit_score or 0) + candidate.manual_score_adjustment))
 
+    # Real interview score = the average AI accuracy across the questions actually evaluated this
+    # interview. Unlike fit_score (resume screening, often absent for interview-only candidates),
+    # this reflects how the candidate performed in THIS interview. None when nothing was evaluated.
+    qa_evals_list = session.qa_evaluations or []
+    scored_accuracies = [
+        e["accuracy_score"]
+        for e in qa_evals_list
+        if isinstance(e, dict) and isinstance(e.get("accuracy_score"), (int, float))
+    ]
+    interview_qa_score = round(sum(scored_accuracies) / len(scored_accuracies), 1) if scored_accuracies else None
+
     return {
         "session_id": str(session.id),
         "candidate_name": session.candidate_name,
         "candidate_email": candidate.email if candidate else None,
-        "job_title": job.title if job else "N/A",
+        # Prefer a linked Job's title; else the title typed at scheduling (TYH-020); else N/A.
+        "job_title": (job.title if job else None) or session.job_title or "N/A",
         "interview_date": session.started_at.strftime("%Y-%m-%d %H:%M UTC") if session.started_at else "N/A",
         "status": session.status.value,
         "fit_score": effective_fit_score,
         "fit_score_breakdown": candidate.score_breakdown if candidate else None,
+        "interview_qa_score": interview_qa_score,
+        "evaluated_questions_count": len(scored_accuracies),
         "integrity_score": session.integrity_score,
         "integrity_needs_review": session.integrity_needs_review,
         "flagged_moments_count": len(flags),
@@ -120,13 +134,17 @@ def build_consolidated_report_pdf(report: dict[str, Any]) -> bytes:
     pdf.cell(0, 8, "Overall Consolidated Ratings", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
+    iv = report.get("interview_qa_score")
+    n_eval = report.get("evaluated_questions_count") or 0
+    iv_str = f"{iv:.0f}/100 ({n_eval} Q)" if iv is not None else "No answers evaluated"
     fit = report.get("fit_score")
     fit_str = f"{fit:.0f}/100" if fit is not None else "Not Scored"
     integ = report.get("integrity_score")
     integ_str = f"{integ:.1f}/100" if integ is not None else "Pending"
-    decision = report.get("interviewer_decision") or "Pending"
+    decision = report.get("interviewer_decision") or "No decision"
 
-    pdf.cell(60, 7, f"AI Fit Score: {fit_str}", 1, 0, "C")
+    pdf.cell(0, 7, f"Interview Q&A Score: {iv_str}", 1, 1, "C")
+    pdf.cell(60, 7, f"AI Fit (Resume): {fit_str}", 1, 0, "C")
     pdf.cell(65, 7, f"Proctoring Integrity: {integ_str}", 1, 0, "C")
     pdf.cell(65, 7, f"Interviewer Decision: {decision.capitalize()}", 1, 1, "C")
     pdf.ln(4)
