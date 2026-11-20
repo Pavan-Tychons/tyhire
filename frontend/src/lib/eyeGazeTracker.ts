@@ -1,4 +1,10 @@
 import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import {
+  createGazeStabilizer,
+  estimateGaze,
+  type GazeDirection,
+  type GazeEstimate,
+} from "@/lib/gazeEstimation";
 
 const WASM_PATH = "/wasm";
 const MODEL_PATH = "/models/face_landmarker.task";
@@ -30,6 +36,12 @@ export function getFaceLandmarker(): Promise<FaceLandmarker> {
         baseOptions: { modelAssetPath: MODEL_PATH, delegate: "CPU" },
         runningMode: "VIDEO",
         numFaces: 2,
+        // The eye-direction channel. These are the model's own ARKit-style coefficients
+        // (eyeLookIn/Out/Up/Down, eyeBlink) with head pose already factored out, which is
+        // what makes eyeball direction separable from "the head turned". Without this flag
+        // the estimator silently falls back to iris geometry — still eye-based, but less
+        // reliable at the extremes. See lib/gazeEstimation.ts.
+        outputFaceBlendshapes: true,
       })
     );
   }
@@ -43,14 +55,26 @@ export interface Box {
   height: number;
 }
 
+export type GazeStatus =
+  | "focused"
+  | "looking_down"
+  | "looking_up"
+  | "turned_away"
+  | "teleprompter_reading"
+  | "no_face";
+
 export interface EyeGazeTrackingResult {
   faceDetected: boolean;
   faceCount: number;
   isLookingAtCamera: boolean;
   teleprompterReading: boolean;
   teleprompterConfidence: number;
-  gazeStatus: "focused" | "turned_away" | "teleprompter_reading" | "no_face";
+  gazeStatus: GazeStatus;
   gazeLabel: string;
+  /** Stabilised eye direction, for callers that want the raw finding rather than a label. */
+  gazeDirection: GazeDirection;
+  /** Null only when no face was found. Carries the per-frame numbers behind the verdict. */
+  gaze: GazeEstimate | null;
   leftEyeBox: Box | null;
   rightEyeBox: Box | null;
   faceBox: Box | null;
@@ -64,8 +88,8 @@ const RIGHT_EYE_INDICES = [33, 133, 158, 159, 160, 144, 145, 153];
 const LEFT_EYE_INDICES = [263, 362, 385, 386, 387, 373, 374, 380];
 const RIGHT_EYE_OUTER = 33;
 const LEFT_EYE_OUTER = 263;
-const LEFT_IRIS_CENTER = 468;
-const RIGHT_IRIS_CENTER = 473;
+// The iris indices that used to live here now sit in lib/gazeEstimation.ts, paired with
+// the eye each one actually belongs to.
 
 function computeBox(
   landmarks: { x: number; y: number }[],
@@ -98,6 +122,12 @@ function computeBox(
 export function createEyeGazeTracker() {
   let busy = false;
   const irisHistory: { time: number; irisRatio: number; yaw: number }[] = [];
+  // This one drives the interviewer's live HUD at a 150ms cadence (EyeTrackingOverlay), so
+  // 4 samples is ~600ms to light up and ~450ms to clear — fast enough to be worth glancing
+  // at mid-question, slow enough that a blink or a dropped frame does not flash it red.
+  // Nothing here is recorded; the permanent record comes from faceDetection.ts, which is
+  // deliberately four times slower.
+  const stabilize = createGazeStabilizer(4, 3);
 
   return async function track(video: HTMLVideoElement): Promise<EyeGazeTrackingResult | null> {
     if (video.readyState < 2 || busy) return null;
@@ -128,6 +158,8 @@ export function createEyeGazeTracker() {
           teleprompterConfidence: 0,
           gazeStatus: "no_face",
           gazeLabel: "No Face Detected",
+          gazeDirection: "center",
+          gaze: null,
           leftEyeBox: null,
           rightEyeBox: null,
           faceBox: null,
@@ -137,6 +169,9 @@ export function createEyeGazeTracker() {
       }
 
       const landmarks = faces[0];
+      // Blendshapes arrive on a parallel array, one entry per detected face.
+      const blendshapes = result.faceBlendshapes?.[0]?.categories;
+      const gaze = estimateGaze(landmarks, blendshapes);
       const nose = landmarks[NOSE_TIP];
       const rightEye = landmarks[RIGHT_EYE_OUTER];
       const leftEye = landmarks[LEFT_EYE_OUTER];
@@ -148,15 +183,21 @@ export function createEyeGazeTracker() {
       const yawRatio = Math.abs(nose.x - midEyeX) / eyeDist;
       const pitchRatio = (nose.y - midEyeY) / eyeDist;
 
-      // Looking at camera when yaw offset is low and pitch is within natural eye level
-      const isLookingAtCamera = yawRatio <= 0.32 && pitchRatio >= 0.12 && pitchRatio <= 0.70;
+      // The verdict is now the eyes', not the head's. Head pose stays in the mix inside
+      // estimateGaze — it is half of where the gaze actually points — but it can no longer
+      // return "focused" on its own while the eyes are reading something off-screen, which
+      // is precisely the case this feature was asked for.
+      //
+      // Stabilised rather than taken per-frame: at 150ms a single blurred frame would
+      // otherwise flash the interviewer's border red. See createGazeStabilizer.
+      const direction: GazeDirection = stabilize(gaze?.direction ?? "center");
+      const isLookingAtCamera = direction === "center";
 
-      // Iris relative horizontal position within left eye
-      const leftEyeInner = landmarks[362] || landmarks[133];
-      const leftEyeOuter = landmarks[263] || landmarks[33];
-      const irisPt = landmarks[LEFT_IRIS_CENTER] || landmarks[RIGHT_IRIS_CENTER] || landmarks[33];
-      const eyeSpan = Math.abs(leftEyeOuter.x - leftEyeInner.x) || 0.05;
-      const irisRatio = (irisPt.x - Math.min(leftEyeInner.x, leftEyeOuter.x)) / eyeSpan;
+      // Mean iris position across BOTH eyes, each measured inside its own socket. The
+      // previous line took landmark 468 — the right iris — and divided it by the left
+      // eye's corner span, so the value fed to the reading detector below was one eye's
+      // pupil as a fraction of the other eye's width.
+      const irisRatio = gaze?.irisRatio ?? 0.5;
 
       const now = performance.now();
       irisHistory.push({ time: now, irisRatio, yaw: yawRatio });
@@ -209,10 +250,22 @@ export function createEyeGazeTracker() {
         height: Math.min(1, maxFy - minFy + 0.06),
       };
 
-      let gazeStatus: "focused" | "turned_away" | "teleprompter_reading" | "no_face" = isLookingAtCamera
-        ? "focused"
-        : "turned_away";
-      let gazeLabel = isLookingAtCamera ? "Focused on Camera" : "Turned Away / Looking Off-Screen";
+      // Named by what was observed, not by what it might mean. "Looking down" is a fact
+      // about the eyes; "reading their phone" is a guess about the room, and the HUD this
+      // feeds sits in front of someone making a hiring decision.
+      let gazeStatus: GazeStatus = "focused";
+      let gazeLabel = "Focused on Screen";
+
+      if (direction === "down") {
+        gazeStatus = "looking_down";
+        gazeLabel = "👁️ Eyes Down — Off-Screen";
+      } else if (direction === "sideways") {
+        gazeStatus = "turned_away";
+        gazeLabel = "👁️ Looking Away From Screen";
+      } else if (direction === "up") {
+        gazeStatus = "looking_up";
+        gazeLabel = "👁️ Eyes Up — Off-Screen";
+      }
 
       if (teleprompterReading) {
         gazeStatus = "teleprompter_reading";
@@ -227,6 +280,8 @@ export function createEyeGazeTracker() {
         teleprompterConfidence,
         gazeStatus,
         gazeLabel,
+        gazeDirection: direction,
+        gaze,
         leftEyeBox,
         rightEyeBox,
         faceBox,

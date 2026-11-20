@@ -164,6 +164,16 @@ class SignalType(str, enum.Enum):
     # off-screen this has no innocent explanation, and its purpose is to blind the other
     # checks, so the absence of those signals afterwards means nothing.
     proctoring_tamper_detected = "proctoring_tamper_detected"
+    # Iris-level gaze (frontend lib/gazeEstimation.ts): the eyes held below the screen line
+    # for several seconds at a stretch, which is the posture of reading something on the
+    # desk, in the lap, or on a phone. Distinct from gaze_off_screen, which now covers any
+    # direction and fires on brief glances too.
+    #
+    # Listed in LOW_SIGNAL_ALONE (services/integrity.py): reading paper notes looks exactly
+    # the same to a camera, so this must never flag a session by itself. It earns its place
+    # by being surfaced live to the interviewer, who can see the context the model cannot
+    # and simply ask what the candidate is looking at.
+    sustained_downward_gaze = "sustained_downward_gaze"
 
 
 class SignalEvent(Base):

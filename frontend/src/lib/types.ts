@@ -248,7 +248,8 @@ export type SignalType =
   | "location_mismatch"
   | "ai_extension_detected"
   | "teleprompter_reading"
-  | "proctoring_tamper_detected";
+  | "proctoring_tamper_detected"
+  | "sustained_downward_gaze";
 
 export interface LiveSignalEvent {
   signal_type: SignalType;

@@ -4,6 +4,10 @@ import { useParams } from "next/navigation";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { ApiError, BASE_URL, getJson, postForm, postJson } from "@/lib/api";
 import WebRTCRoom, { type WebRTCApi } from "@/components/WebRTCRoom";
+import DeviceSetupDialog, {
+  DEFAULT_DEVICE_PREFS,
+  type DevicePrefs,
+} from "@/components/DeviceSetupDialog";
 import { createFaceSignalDetector } from "@/lib/faceDetection";
 import { detectAiExtensionArtifacts, detectProctoringTamper } from "@/lib/extensionDetection";
 import {
@@ -54,6 +58,10 @@ export default function InterviewJoinPage() {
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [finishHadError, setFinishHadError] = useState(false);
+  // Chosen on the pre-join dialog and fixed for the rest of the call. Held here rather than
+  // inside JoinGate because JoinGate unmounts the moment the stage flips to "interview" —
+  // and one of these is a live screen-share track that has to outlive it.
+  const [devicePrefs, setDevicePrefs] = useState<DevicePrefs>(DEFAULT_DEVICE_PREFS);
   const startRef = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -80,11 +88,12 @@ export default function InterviewJoinPage() {
   if (stage === "ready")
     return (
       <JoinGate
-        onJoin={() => {
+        onJoin={(prefs) => {
           // The interview clock starts here, at the actual join click, not when /start
           // succeeded above — otherwise time spent reading this screen before joining
           // would wrongly count against every signal's session_offset_ms below.
           startRef.current = Date.now();
+          setDevicePrefs(prefs);
           setStage("interview");
         }}
       />
@@ -93,6 +102,7 @@ export default function InterviewJoinPage() {
     return (
       <InterviewRecorder
         session={session}
+        devicePrefs={devicePrefs}
         startRef={startRef}
         onDone={(hadError) => {
           setFinishHadError(hadError);
@@ -589,40 +599,54 @@ function StartGate({ session, onReady }: { session: InterviewSession; onReady: (
   return <Centered>Checking…</Centered>;
 }
 
-function JoinGate({ onJoin }: { onJoin: () => void }) {
+function JoinGate({ onJoin }: { onJoin: (prefs: DevicePrefs) => void }) {
+  const [setupOpen, setSetupOpen] = useState(false);
+
   return (
-    <Centered>
-      <div className="space-y-4">
-        <h1 className="text-lg font-semibold">Ready to begin</h1>
-        <p className="text-sm text-zinc-600">
-          Clicking below turns on your camera and microphone and connects you to the
-          interviewer — nothing starts before that. Make sure you&apos;re somewhere quiet
-          and well-lit first.
-        </p>
-        <button
-          onClick={() => {
+    <>
+      <Centered>
+        <div className="space-y-4">
+          <h1 className="text-lg font-semibold">Ready to begin</h1>
+          <p className="text-sm text-zinc-600">
+            Next you&apos;ll check your camera and microphone and choose what to turn on.
+            Nothing is sent to the interviewer until you join from that dialog. Make sure
+            you&apos;re somewhere quiet and well-lit first.
+          </p>
+          <button onClick={() => setSetupOpen(true)} className="btn-primary">
+            Check devices &amp; join
+          </button>
+        </div>
+      </Centered>
+
+      {setupOpen && (
+        <DeviceSetupDialog
+          title="Before you join"
+          description="Check how you look and sound, and choose what to turn on. You can change any of this during the interview."
+          joinLabel="Join Meet"
+          allowScreenShare
+          notice="This interview is recorded for review. Turning your camera off here stops video being recorded or sent to the interviewer — they will be able to see that it is off."
+          onCancel={() => setSetupOpen(false)}
+          onJoin={(prefs) => {
             // Fired synchronously inside the click, because requestFullscreen only works
-            // from a user gesture. This is now the one place fullscreen is attempted —
-            // the screen-share step that used to make its own attempt is gone, since
-            // sharing no longer gates joining.
+            // from a user gesture — which this still is, now that the dialog's Join button
+            // is the gesture rather than the one on the screen behind it.
             requestFullscreen().catch(() => {});
-            onJoin();
+            onJoin(prefs);
           }}
-          className="btn-primary"
-        >
-          Join Meet
-        </button>
-      </div>
-    </Centered>
+        />
+      )}
+    </>
   );
 }
 
 function InterviewRecorder({
   session,
+  devicePrefs,
   startRef,
   onDone,
 }: {
   session: InterviewSession;
+  devicePrefs: DevicePrefs;
   startRef: RefObject<number>;
   onDone: (hadError: boolean) => void;
 }) {
@@ -630,25 +654,68 @@ function InterviewRecorder({
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const webrtcApiRef = useRef<WebRTCApi | null>(null);
-  const pendingSignals = useRef<{ signal_type: SignalType; session_offset_ms: number }[]>([]);
+  const pendingSignals = useRef<
+    { signal_type: SignalType; session_offset_ms: number; meta?: Record<string, unknown> }[]
+  >([]);
   const [finishing, setFinishing] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [recordingStarted, setRecordingStarted] = useState(false);
-  const [micMuted, setMicMuted] = useState(false);
-  const [cameraOff, setCameraOff] = useState(false);
+  // Seeded from the pre-join dialog so the buttons below already read "Unmute mic" /
+  // "Turn camera on" when the candidate chose to join with them off, instead of offering to
+  // turn off something that is already off.
+  const [micMuted, setMicMuted] = useState(!devicePrefs.micEnabled);
+  const [cameraOff, setCameraOff] = useState(!devicePrefs.cameraEnabled);
+  // Mirrors cameraOff for the face-detection interval, whose closure is created once and
+  // would otherwise keep reading the camera state as it was at mount.
+  const cameraOffRef = useRef(!devicePrefs.cameraEnabled);
   const [muteRequested, setMuteRequested] = useState(false);
   const [isFullscreenOn, setIsFullscreenOn] = useState(false);
   const [proctoringWarning, setProctoringWarning] = useState<string | null>(null);
-  // Screen sharing starts off and is opt-in from here on: either the candidate presses the
-  // button below, or the interviewer asks and they accept. The stream is owned by this
-  // component now that nothing acquires one before the call.
+  // Screen sharing is opt-in: from the pre-join dialog, from the button below, or by
+  // accepting the interviewer's ask. The stream is owned by this component.
   const screenStreamRef = useRef<MediaStream | null>(null);
-  const [currentScreenTrack, setCurrentScreenTrack] = useState<MediaStreamTrack | null>(null);
+  const [currentScreenTrack, setCurrentScreenTrack] = useState<MediaStreamTrack | null>(
+    devicePrefs.screenTrack
+  );
   const [screenShareRequested, setScreenShareRequested] = useState(false);
   const [screenShareError, setScreenShareError] = useState<string | null>(null);
   // Whether a share ever happened, for the single end-of-interview signal. A ref, not
   // state: it is only read in finish(), and must survive the share being stopped again.
-  const everSharedRef = useRef(false);
+  const everSharedRef = useRef(devicePrefs.screenTrack !== null);
+
+  // Takes ownership of a share that was started in the pre-join dialog, and records the
+  // same facts the in-call path records — so a share begun before joining is
+  // indistinguishable from one begun during the call to everything downstream.
+  //
+  // addEventListener rather than assigning .onended, which is what the in-call path does
+  // with a track it created itself: this track arrives through props, and overwriting a
+  // property of something owned upstream is both a lint error here and a real hazard —
+  // the dialog clears its own handler on handover precisely so neither side clobbers the
+  // other's. The listener is removed on unmount for the same reason.
+  useEffect(() => {
+    const track = devicePrefs.screenTrack;
+    if (!track) return;
+
+    // finish() tears down via screenStreamRef; the dialog hands over the track alone, so
+    // wrap it. Stopping this wrapper's tracks stops the same underlying capture.
+    screenStreamRef.current = new MediaStream([track]);
+
+    const settings = track.getSettings() as MediaTrackSettings & { displaySurface?: string };
+    if (settings.displaySurface && settings.displaySurface !== "monitor") {
+      sendSignal(session, "screen_share_partial", Date.now() - startRef.current, {
+        displaySurface: settings.displaySurface,
+      });
+    }
+
+    const onEnded = () => {
+      setCurrentScreenTrack(null);
+      sendSignal(session, "screen_share_stopped", Date.now() - startRef.current);
+    };
+    track.addEventListener("ended", onEnded);
+    return () => track.removeEventListener("ended", onEnded);
+    // Mount-only: the handed-over track is fixed for the life of this component.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function toggleScreenShare() {
     if (currentScreenTrack && currentScreenTrack.readyState === "live") {
@@ -729,21 +796,35 @@ function InterviewRecorder({
     tokenHeaderKey: "X-Interview-Token",
   });
 
+  // Both toggles drive two captures: the call's stream inside WebRTCRoom, and the separate
+  // proctoring stream this component records and uploads. Only the first used to be
+  // flipped, so "Mute mic" silenced the interviewer while the recording kept listening —
+  // and once the pre-join dialog could start the interview muted, unmuting would never have
+  // brought the recording back at all.
   function toggleMic() {
-    setMicMuted(webrtcApiRef.current?.toggleMic() ?? false);
+    const muted = webrtcApiRef.current?.toggleMic() ?? false;
+    streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+    setMicMuted(muted);
     setMuteRequested(false);
   }
   function toggleCamera() {
-    setCameraOff(webrtcApiRef.current?.toggleCamera() ?? false);
+    const off = webrtcApiRef.current?.toggleCamera() ?? false;
+    streamRef.current?.getVideoTracks().forEach((t) => (t.enabled = !off));
+    cameraOffRef.current = off;
+    setCameraOff(off);
   }
   function toggleFullscreen() {
     setIsFullscreenOn(webrtcApiRef.current?.toggleFullscreen() ?? false);
   }
 
-  function pushSignal(signal_type: SignalType) {
+  // meta is optional and carried through to the reviewer's timeline. For the gaze signals
+  // it records which way the eyes went, so a flag raised weeks earlier can be read back as
+  // "eyes down" rather than an unqualified "gaze off-screen" that nobody can now check.
+  function pushSignal(signal_type: SignalType, meta?: Record<string, unknown>) {
     pendingSignals.current.push({
       signal_type,
       session_offset_ms: Date.now() - startRef.current,
+      ...(meta ? { meta } : {}),
     });
   }
 
@@ -899,9 +980,11 @@ function InterviewRecorder({
     // Consecutive-hit counters so a single bad frame (blink, brief head turn) doesn't flag —
     // only sustained conditions do, matching the roadmap's "never an alarm on its own" rule.
     let gazeAwayStreak = 0;
+    let downGazeStreak = 0;
     let secondFaceStreak = 0;
     // One report per episode — see the emission logic below.
     let gazeAwayReported = false;
+    let downGazeReported = false;
     let secondFaceReported = false;
     let motionReported = false;
 
@@ -917,6 +1000,14 @@ function InterviewRecorder({
       .then((s) => {
         stream = s;
         streamRef.current = s;
+
+        // The proctoring capture is a second, independent getUserMedia — so the pre-join
+        // choices have to be applied here as well as to the call. Without this, a candidate
+        // who switched the camera off would still be recorded and uploaded in 5s chunks
+        // while the UI told them it was off.
+        if (!devicePrefs.cameraEnabled) s.getVideoTracks().forEach((t) => (t.enabled = false));
+        if (!devicePrefs.micEnabled) s.getAudioTracks().forEach((t) => (t.enabled = false));
+
         if (videoRef.current) videoRef.current.srcObject = s;
 
         const recorder = new MediaRecorder(s, { mimeType: "video/webm" });
@@ -965,6 +1056,11 @@ function InterviewRecorder({
         // this; only the derived signal (e.g. "gaze off-screen") gets sent to the backend.
         faceInterval = setInterval(async () => {
           if (!videoRef.current) return;
+          // A disabled video track delivers black frames, and black frames are not evidence
+          // of anything — read as proctoring input they would manufacture "no face" and
+          // "looking away" for as long as the camera stayed off. The camera being off is
+          // already its own plainly visible fact; it should not also become a flag.
+          if (cameraOffRef.current) return;
           const result = await detectFace(videoRef.current);
           if (!result) return;
 
@@ -989,11 +1085,32 @@ function InterviewRecorder({
             gazeAwayStreak++;
             if (gazeAwayStreak >= 3 && !gazeAwayReported) {
               gazeAwayReported = true;
-              pushSignal("gaze_off_screen");
+              pushSignal("gaze_off_screen", {
+                direction: result.gazeDirection,
+                eyeTracked: result.usedBlendshapes,
+              });
             }
           } else {
             gazeAwayStreak = 0;
             gazeAwayReported = false;
+          }
+
+          // The specific case worth interrupting the interviewer for: eyes held below the
+          // screen line rather than merely off it. The detector's own stabiliser has
+          // already required ~2.4s before calling it "down"; these extra samples take the
+          // total past 4s, which is well beyond a glance at the keyboard and into the
+          // territory of reading something. Still one report per episode — a candidate
+          // working from paper notes would otherwise generate a row every 800ms all
+          // interview, which is how a feed stops being read.
+          if (result.downwardGaze) {
+            downGazeStreak++;
+            if (downGazeStreak >= 2 && !downGazeReported) {
+              downGazeReported = true;
+              pushSignal("sustained_downward_gaze", { eyeTracked: result.usedBlendshapes });
+            }
+          } else {
+            downGazeStreak = 0;
+            downGazeReported = false;
           }
 
           if (result.excessiveMotion) {
@@ -1117,6 +1234,8 @@ function InterviewRecorder({
           role="candidate"
           iceServers={session.ice_servers}
           extraVideoTrack={currentScreenTrack}
+          initialCameraEnabled={devicePrefs.cameraEnabled}
+          initialMicEnabled={devicePrefs.micEnabled}
           enableEyeTracking={true}
           onApiReady={(api) => {
             webrtcApiRef.current = api;

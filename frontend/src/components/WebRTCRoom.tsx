@@ -5,7 +5,18 @@ import { BASE_URL } from "@/lib/api";
 import type { IceServer } from "@/lib/types";
 import { LiveKitRoom, RoomAudioRenderer, useTracks, VideoTrack } from "@livekit/components-react";
 import { Track, Room, RoomEvent } from "livekit-client";
-import EyeTrackingOverlay from "@/components/EyeTrackingOverlay";
+import EyeTrackingOverlay, { GAZE_TONE } from "@/components/EyeTrackingOverlay";
+import type { GazeStatus } from "@/lib/eyeGazeTracker";
+
+/** Short forms for the in-video badge, which has far less room than the overlay's own. */
+const GAZE_BADGE_LABEL: Record<GazeStatus, string> = {
+  focused: "🟢 Gaze: Focused",
+  looking_down: "👁️ Eyes Down — Off-Screen",
+  looking_up: "Gaze: Upward",
+  turned_away: "🔴 Gaze: Looking Away",
+  teleprompter_reading: "⚠️ Teleprompter Reading",
+  no_face: "Gaze: No Face",
+};
 import { exitFullscreen, isFullscreenActive, requestFullscreen } from "@/lib/fullscreen";
 
 export interface WebRTCApi {
@@ -47,7 +58,14 @@ interface WebRTCRoomProps {
   livekitToken?: string | null;
   livekitUrl?: string | null;
   enableEyeTracking?: boolean;
-  onGazeChange?: (isFocused: boolean, isTeleprompter?: boolean) => void;
+  onGazeChange?: (isFocused: boolean, isTeleprompter?: boolean, status?: GazeStatus) => void;
+  /** What the pre-join dialog chose. Applied to the local tracks before they are ever added
+   * to the peer connection, so a camera or mic switched off there is never published — not
+   * even for the frame between acquiring the device and the first toggle. Both default to
+   * on, which is what every caller that skips the dialog gets. The in-call toggles work
+   * from there as usual; these are the starting position, not a lock. */
+  initialCameraEnabled?: boolean;
+  initialMicEnabled?: boolean;
 }
 
 function wsBaseUrl(): string {
@@ -114,6 +132,8 @@ export default function WebRTCRoom({
   livekitUrl,
   enableEyeTracking = false,
   onGazeChange,
+  initialCameraEnabled = true,
+  initialMicEnabled = true,
 }: WebRTCRoomProps) {
   if (livekitToken && livekitUrl) {
     return (
@@ -129,6 +149,8 @@ export default function WebRTCRoom({
         onPeerConnectedChange={onPeerConnectedChange}
         enableEyeTracking={enableEyeTracking}
         onGazeChange={onGazeChange}
+        initialCameraEnabled={initialCameraEnabled}
+        initialMicEnabled={initialMicEnabled}
       />
     );
   }
@@ -305,6 +327,25 @@ export default function WebRTCRoom({
         localStream?.getTracks().forEach((t) => t.stop());
         return;
       }
+
+      // Apply the pre-join choices before addLocalTracks() below hands these to the peer
+      // connection. Disabling the track rather than dropping it is deliberate and matches
+      // toggleMic/toggleCamera: the track still exists and is still negotiated, so turning
+      // the camera back on mid-call is a flag flip rather than a renegotiation.
+      //
+      // Read straight from the props rather than through a ref: this effect runs once per
+      // connection ([sessionId, token, role]), and the parent fixes both values at the
+      // moment Join is pressed — before this component mounts — so there is no later value
+      // for the closure to be stale against.
+      if (localStream) {
+        if (!initialCameraEnabled) {
+          localStream.getVideoTracks().forEach((t) => (t.enabled = false));
+        }
+        if (!initialMicEnabled) {
+          localStream.getAudioTracks().forEach((t) => (t.enabled = false));
+        }
+      }
+
       if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
 
       pc = new RTCPeerConnection({
@@ -529,21 +570,33 @@ export default function WebRTCRoom({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, token, role]);
 
-  const [isGazeFocused, setIsGazeFocused] = useState(true);
-  const [isTeleprompter, setIsTeleprompter] = useState(false);
+  // One state for the whole finding rather than two booleans. "Eyes down" is a third thing
+  // that is neither focused nor turned away, and a pair of booleans had nowhere to put it —
+  // it would have arrived here as simply "not focused" and been drawn the same red as a
+  // candidate facing away from the camera entirely.
+  const [gazeStatus, setGazeStatus] = useState<GazeStatus>("focused");
 
-  const handleGaze = (focused: boolean, teleprompter?: boolean) => {
-    setIsGazeFocused(focused);
-    if (teleprompter !== undefined) setIsTeleprompter(teleprompter);
-    onGazeChange?.(focused, teleprompter);
+  const handleGaze = (focused: boolean, teleprompter?: boolean, status?: GazeStatus) => {
+    // status is the richer value; the booleans remain the fallback for any caller that
+    // predates it, so a missing status still lands on a sensible state rather than
+    // pinning the badge to "focused" through an entire interview.
+    setGazeStatus(status ?? (teleprompter ? "teleprompter_reading" : focused ? "focused" : "turned_away"));
+    onGazeChange?.(focused, teleprompter, status);
   };
+
+  const isTeleprompter = gazeStatus === "teleprompter_reading";
+  const isGazeFocused = gazeStatus === "focused";
 
   // Interviewer Dynamic Gaze Border Class
   const gazeBorderClass = isTeleprompter
     ? "border-purple-500 ring-4 ring-purple-500/40 shadow-[0_0_20px_rgba(168,85,247,0.5)]"
-    : isGazeFocused
+    : gazeStatus === "looking_up"
+    ? // Amber: common while thinking, so not drawn as an alarm. See GAZE_TONE.
+      "border-amber-500 ring-2 ring-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.4)]"
+    : isGazeFocused || gazeStatus === "no_face"
     ? "border-emerald-500 ring-2 ring-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
-    : "border-red-500 ring-4 ring-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse";
+    : // looking_down and turned_away both land here — eyes off the screen, red either way.
+      "border-red-500 ring-4 ring-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse";
 
   if (role === "interviewer") {
     return (
@@ -603,30 +656,8 @@ export default function WebRTCRoom({
 
           {/* Gaze Status HUD Badge on Camera */}
           <div className="absolute top-2 left-2 px-2.5 py-1 rounded-full text-xs font-bold bg-white/95 shadow-md border border-zinc-200 flex items-center gap-1.5 z-10">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                isTeleprompter
-                  ? "bg-purple-600 animate-pulse"
-                  : isGazeFocused
-                  ? "bg-emerald-500"
-                  : "bg-red-500 animate-pulse"
-              }`}
-            />
-            <span
-              className={
-                isTeleprompter
-                  ? "text-purple-700 font-bold"
-                  : isGazeFocused
-                  ? "text-emerald-700"
-                  : "text-red-600 font-bold"
-              }
-            >
-              {isTeleprompter
-                ? "⚠️ Teleprompter Reading"
-                : isGazeFocused
-                ? "🟢 Gaze: Focused"
-                : "🔴 Gaze: Looking Away"}
-            </span>
+            <span className={`w-2 h-2 rounded-full ${GAZE_TONE[gazeStatus].dot}`} />
+            <span className={GAZE_TONE[gazeStatus].text}>{GAZE_BADGE_LABEL[gazeStatus]}</span>
           </div>
 
         </div>
@@ -702,6 +733,8 @@ function LiveKitRoomRenderer({
   onPeerConnectedChange,
   enableEyeTracking,
   onGazeChange,
+  initialCameraEnabled = true,
+  initialMicEnabled = true,
 }: {
   sessionId: string;
   token: string;
@@ -714,7 +747,9 @@ function LiveKitRoomRenderer({
   onPeerEnded?: () => void;
   onPeerConnectedChange?: (connected: boolean) => void;
   enableEyeTracking?: boolean;
-  onGazeChange?: (isFocused: boolean, isTeleprompter?: boolean) => void;
+  onGazeChange?: (isFocused: boolean, isTeleprompter?: boolean, status?: GazeStatus) => void;
+  initialCameraEnabled?: boolean;
+  initialMicEnabled?: boolean;
 }) {
   const room = useMemo(() => new Room(), []);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -827,13 +862,17 @@ function LiveKitRoomRenderer({
   if (role === "interviewer") {
     return (
       <div ref={containerRef} className="relative w-full h-full min-h-[380px]">
+        {/* video/audio carry the pre-join choices. Unlike the mesh path, which keeps the
+          * track and disables it, LiveKit simply does not publish it — toggleCamera and
+          * toggleMic call setCameraEnabled / setMicrophoneEnabled, which publish on demand,
+          * so turning either back on mid-call still works from this starting position. */}
         <LiveKitRoom
           room={room}
           serverUrl={url}
           token={token}
           connect={true}
-          video={true}
-          audio={true}
+          video={initialCameraEnabled}
+          audio={initialMicEnabled}
           className="relative w-full h-full flex flex-col md:flex-row gap-3"
         >
         <RoomAudioRenderer />
@@ -898,8 +937,8 @@ function LiveKitRoomRenderer({
         serverUrl={url}
         token={token}
         connect={true}
-        video={true}
-        audio={true}
+        video={initialCameraEnabled}
+        audio={initialMicEnabled}
         className="relative w-full h-full"
       >
         <RoomAudioRenderer />

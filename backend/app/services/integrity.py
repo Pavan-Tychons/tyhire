@@ -32,6 +32,12 @@ LOW_SIGNAL_ALONE = {
     SignalType.excessive_motion,
     SignalType.window_blur,
     SignalType.devtools_open,
+    # Eyes held below the screen. Strong enough to interrupt the interviewer live, not
+    # strong enough to mark a transcript on its own: paper notes, a second keyboard and a
+    # phone all look identical from a webcam, and only the person in the room can tell
+    # them apart. It still contributes once it lands beside something else — eyes down
+    # during a tab switch, or alongside an AI extension, is a different proposition.
+    SignalType.sustained_downward_gaze,
     # Screen sharing is optional, so never sharing is an ordinary choice, not evidence.
     # It is recorded for the reviewer's context and only becomes interesting if it lands
     # in the same window as something that is.
@@ -158,6 +164,7 @@ def _summarize(distinct_types: set[SignalType], cluster: list[SignalEvent]) -> s
         SignalType.second_voice: "Second voice detected",
         SignalType.voice_mismatch: "Voice mismatch detected",
         SignalType.gaze_off_screen: "Gaze off-screen",
+        SignalType.sustained_downward_gaze: "Eyes held below the screen (reading something off-screen)",
         SignalType.excessive_motion: "Excessive motion",
         SignalType.virtual_camera: "Virtual camera signature",
         SignalType.response_timing_anomaly: "Response timing anomaly",

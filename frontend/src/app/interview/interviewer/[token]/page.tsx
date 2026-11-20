@@ -6,6 +6,12 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { BASE_URL, getJson, postForm, postJson } from "@/lib/api";
 import { useDialog } from "@/components/Dialog";
 import WebRTCRoom, { type WebRTCApi } from "@/components/WebRTCRoom";
+import DeviceSetupDialog, {
+  DEFAULT_DEVICE_PREFS,
+  type DevicePrefs,
+} from "@/components/DeviceSetupDialog";
+import { GAZE_TONE } from "@/components/EyeTrackingOverlay";
+import type { GazeStatus } from "@/lib/eyeGazeTracker";
 import LiveTranscriptFeed from "@/components/LiveTranscriptFeed";
 import { useLiveSpeech, type LiveTranscriptItem } from "@/lib/useLiveSpeech";
 import { useRealtimeTranscribe } from "@/lib/useRealtimeTranscribe";
@@ -83,6 +89,31 @@ const SIGNAL_LABELS: Record<SignalType, string> = {
   ai_extension_detected: "AI answer-helper browser extension detected",
   teleprompter_reading: "Teleprompter / Script-reading eye motion pattern",
   proctoring_tamper_detected: "Extension interfering with proctoring (focus/visibility faked)",
+  sustained_downward_gaze: "Eyes held below the screen — reading something off-screen",
+};
+
+/** The header pill is the one gaze readout always on screen, so it names the direction
+ * rather than only whether the candidate is engaged — "looking away" and "eyes down at
+ * something" call for different questions from the interviewer. */
+const HEADER_GAZE_LABEL: Record<GazeStatus, string> = {
+  focused: "🟢 Gaze: Focused On Screen",
+  looking_down: "👁️ Eyes Down — Off-Screen",
+  looking_up: "Gaze: Upward",
+  turned_away: "🔴 Gaze: Looking Away",
+  teleprompter_reading: "⚠️ Teleprompter Reading",
+  no_face: "Gaze: No Face Detected",
+};
+
+/** The telemetry panel has room to say what was actually measured, and should: an
+ * interviewer deciding how much weight to put on this deserves the finding in plain words,
+ * not a colour. */
+const TELEMETRY_GAZE_LABEL: Record<GazeStatus, string> = {
+  focused: "🟢 Eyes on screen (iris tracking: focused)",
+  looking_down: "👁️ Eyes held below the screen — reading something off-screen",
+  looking_up: "Eyes directed above the screen",
+  turned_away: "🔴 Eyes directed away from the screen",
+  teleprompter_reading: "⚠️ Teleprompter Script Reading Detected (Horizontal scanning)",
+  no_face: "No face in frame",
 };
 
 const DECISION_OPTIONS: { value: "proceed" | "concern" | "reject"; label: string; className: string }[] = [
@@ -104,6 +135,12 @@ const CRITICAL_SIGNAL_TYPES: Set<SignalType> = new Set([
   "voice_mismatch",
   "external_display_detected",
   "teleprompter_reading",
+  // Surfaced live rather than left for the post-interview review, which is the only point
+  // at which it is useful: the interviewer can look at the candidate and ask. By the time
+  // anyone reads the report, "were they reading notes or a phone?" is unanswerable.
+  // Deliberately NOT treated as evidence on its own — see LOW_SIGNAL_ALONE in
+  // backend/app/services/integrity.py.
+  "sustained_downward_gaze",
 ]);
 
 /** Names the offending application where the detector reported one — "an unauthorised app
@@ -140,8 +177,11 @@ export default function InterviewerCapturePage() {
   const [decisionNotes, setDecisionNotes] = useState("");
   const [savingDecision, setSavingDecision] = useState(false);
   const [activeTab, setActiveTab] = useState<"questions" | "transcript" | "sentiment" | "proctoring" | "evaluation">("questions");
-  const [isCandidateGazeFocused, setIsCandidateGazeFocused] = useState(true);
-  const [isTeleprompterReading, setIsTeleprompterReading] = useState(false);
+  // One piece of state for the candidate's gaze, not three. This was a pair of booleans
+  // (focused / teleprompter) that could not express "eyes down" at all, and keeping them
+  // beside the status would mean three values that can disagree about the same instant.
+  const [candidateGazeStatus, setCandidateGazeStatus] = useState<GazeStatus>("focused");
+  const isTeleprompterReading = candidateGazeStatus === "teleprompter_reading";
 
   // AI-Suggested Questions & Live Answer Evaluation
   const [suggestedQuestions, setSuggestedQuestions] = useState<SuggestedQuestion[]>([]);
@@ -172,6 +212,17 @@ export default function InterviewerCapturePage() {
   const webrtcApiRef = useRef<WebRTCApi | null>(null);
   const [micMuted, setMicMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  // What the pre-join dialog chose. Unlike the candidate page — where the call lives in a
+  // child that mounts after the choice is made — this component is already mounted when the
+  // dialog closes, so the choice is also pushed into micMuted/cameraOff by hand there.
+  const [devicePrefs, setDevicePrefs] = useState<DevicePrefs>(DEFAULT_DEVICE_PREFS);
+  const [setupOpen, setSetupOpen] = useState(false);
+  // The interviewer's own screen share — for walking a candidate through a diagram or a
+  // code sample. Separate from requestScreenShare() below, which only asks the candidate to
+  // share theirs. The candidate's view already renders an incoming screen track, so this
+  // needs no counterpart there.
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const [screenTrack, setScreenTrack] = useState<MediaStreamTrack | null>(null);
   const [muteRequestSent, setMuteRequestSent] = useState(false);
   const [screenShareRequestSent, setScreenShareRequestSent] = useState(false);
   const [isFullscreenOn, setIsFullscreenOn] = useState(false);
@@ -477,7 +528,10 @@ export default function InterviewerCapturePage() {
     }
   }, [session]);
 
-  async function startRecording() {
+  // Takes the choice as an argument rather than reading devicePrefs: this is called from
+  // the same handler that sets that state, and a state update is not visible to the closure
+  // that scheduled it — so reading it here would always see the previous value.
+  async function startRecording(prefs: DevicePrefs = devicePrefs) {
     if (!session) return;
     setMicError(null);
     setRecordingWarning(null);
@@ -485,6 +539,10 @@ export default function InterviewerCapturePage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      // Joining muted has to mean muted here too. This recorder is independent of the call,
+      // so without this the transcript would carry the interviewer's side of a conversation
+      // the candidate never heard.
+      if (!prefs.micEnabled) stream.getAudioTracks().forEach((t) => (t.enabled = false));
       const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
       recorder.ondataavailable = async (e) => {
         if (e.data.size === 0) return;
@@ -534,6 +592,11 @@ export default function InterviewerCapturePage() {
     webrtcApiRef.current?.stopMedia();
     recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
+    // A share left running after the call would keep the browser's "sharing your screen"
+    // bar up over whatever the interviewer does next.
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    setScreenTrack(null);
     recorderRef.current = null;
     streamRef.current = null;
 
@@ -546,11 +609,60 @@ export default function InterviewerCapturePage() {
   }
 
   function toggleMic() {
-    setMicMuted(webrtcApiRef.current?.toggleMic() ?? false);
+    const muted = webrtcApiRef.current?.toggleMic() ?? false;
+    // The interviewer's voice is captured twice: once by the call, and once by the
+    // audio-only recorder feeding the live transcript. Muting has to reach both, or the
+    // transcript keeps attributing speech to someone the candidate cannot hear.
+    streamRef.current?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+    setMicMuted(muted);
   }
 
   function toggleCamera() {
     setCameraOff(webrtcApiRef.current?.toggleCamera() ?? false);
+  }
+
+  async function toggleScreenShare() {
+    if (screenTrack && screenTrack.readyState === "live") {
+      screenTrack.stop();
+      screenStreamRef.current = null;
+      setScreenTrack(null);
+      return;
+    }
+
+    try {
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        throw new Error(
+          "Screen sharing is not supported in this browser. Please use Chrome, Edge, or Firefox."
+        );
+      }
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const track = stream.getVideoTracks()[0];
+      if (!track) throw new Error("No video track was found in the screen share.");
+      screenStreamRef.current = stream;
+      setScreenTrack(track);
+      // Also fires for the browser's own "Stop sharing" bar, which is the usual way a share
+      // ends and would otherwise leave the button claiming a share that is already over.
+      track.onended = () => {
+        screenStreamRef.current = null;
+        setScreenTrack(null);
+      };
+    } catch (err) {
+      // Shown rather than swallowed: a silently-dismissed picker looks identical to a
+      // share that started, and the interviewer would carry on talking to a blank panel.
+      let message = "Could not start screen sharing.";
+      if (err instanceof DOMException) {
+        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          message = "Screen sharing was cancelled or blocked.";
+        } else if (err.name === "AbortError") {
+          message = "No screen was selected.";
+        } else if (err instanceof Error) {
+          message = err.message;
+        }
+      } else if (err instanceof Error) {
+        message = err.message;
+      }
+      toast({ variant: "error", message });
+    }
   }
 
   function toggleFullscreen() {
@@ -679,9 +791,9 @@ export default function InterviewerCapturePage() {
 
           {joined && !callEnded && (
             <div className="flex items-center gap-2 px-3 py-1 bg-surface border border-zinc-200 rounded-full text-xs shadow-xs">
-              <span className={`w-2 h-2 rounded-full ${isCandidateGazeFocused ? "bg-emerald-500" : "bg-red-500 animate-ping"}`} />
-              <span className={isCandidateGazeFocused ? "text-emerald-700 text-xs font-semibold" : "text-red-600 text-xs font-bold"}>
-                {isCandidateGazeFocused ? "🟢 Gaze: Focused On Camera" : "🔴 Gaze: Looking Away"}
+              <span className={`w-2 h-2 rounded-full ${GAZE_TONE[candidateGazeStatus].dot}`} />
+              <span className={`text-xs ${GAZE_TONE[candidateGazeStatus].text}`}>
+                {HEADER_GAZE_LABEL[candidateGazeStatus]}
               </span>
             </div>
           )}
@@ -721,20 +833,48 @@ export default function InterviewerCapturePage() {
             </div>
 
             <button
-              onClick={() => {
+              onClick={() => setSetupOpen(true)}
+              className="w-full py-3.5 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all transform active:scale-98"
+            >
+              Check devices &amp; join
+            </button>
+          </div>
+
+          {setupOpen && (
+            <DeviceSetupDialog
+              title="Before you join"
+              description="Check how you look and sound, and choose what to turn on. You can change any of this during the interview."
+              joinLabel="Join Meet & Start AI Telemetry"
+              allowScreenShare
+              onCancel={() => setSetupOpen(false)}
+              onJoin={(prefs) => {
+                // Pushed into the control-bar state by hand: this component is already
+                // mounted, so unlike the candidate's recorder it cannot pick these up from
+                // a useState initialiser.
+                setDevicePrefs(prefs);
+                setMicMuted(!prefs.micEnabled);
+                setCameraOff(!prefs.cameraEnabled);
+                setScreenTrack(prefs.screenTrack);
+                if (prefs.screenTrack) {
+                  screenStreamRef.current = new MediaStream([prefs.screenTrack]);
+                  // Re-pointed off the dialog, which is about to unmount.
+                  prefs.screenTrack.onended = () => {
+                    screenStreamRef.current = null;
+                    setScreenTrack(null);
+                  };
+                }
+                setSetupOpen(false);
+
                 // Deliberately NOT auto-fullscreening the whole page here — that swallowed
                 // the AI Questions/Transcript/Sentiment/Signals tabs and decision bar along
                 // with the video, with no way back short of Esc. WebRTCRoom's own fullscreen
                 // button now targets just the video+screenshare area instead.
                 setCallStartTime(Date.now());
                 setJoined(true);
-                startRecording();
+                startRecording(prefs);
               }}
-              className="w-full py-3.5 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all transform active:scale-98"
-            >
-              Join Meet & Start AI Telemetry
-            </button>
-          </div>
+            />
+          )}
         </div>
       ) : (
         <>
@@ -826,10 +966,18 @@ export default function InterviewerCapturePage() {
                   token={session.interviewer_join_token ?? ""}
                   role="interviewer"
                   iceServers={session.ice_servers}
+                  extraVideoTrack={screenTrack}
+                  initialCameraEnabled={devicePrefs.cameraEnabled}
+                  initialMicEnabled={devicePrefs.micEnabled}
                   enableEyeTracking={true}
-                  onGazeChange={(focused, isTeleprompter) => {
-                    setIsCandidateGazeFocused(focused);
-                    if (isTeleprompter !== undefined) setIsTeleprompterReading(isTeleprompter);
+                  onGazeChange={(focused, isTeleprompter, status) => {
+                    // Same fallback as WebRTCRoom's own handler: if a caller ever omits the
+                    // status, land on a sensible state rather than leaving the pill frozen
+                    // on whatever it last showed.
+                    setCandidateGazeStatus(
+                      status ??
+                        (isTeleprompter ? "teleprompter_reading" : focused ? "focused" : "turned_away")
+                    );
                   }}
                   onApiReady={(api) => {
                     webrtcApiRef.current = api;
@@ -1010,6 +1158,17 @@ export default function InterviewerCapturePage() {
                   {cameraOff ? "Turn Camera On" : "Turn Camera Off"}
                 </button>
                 <button
+                  onClick={toggleScreenShare}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                    screenTrack
+                      ? "bg-blue-50 border-blue-200 text-blue-700"
+                      : "bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100"
+                  }`}
+                  title="Shares your own screen with the candidate"
+                >
+                  {screenTrack ? "🖥️ Sharing — Stop" : "🖥️ Share My Screen"}
+                </button>
+                <button
                   onClick={requestMute}
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-50 border border-zinc-200 hover:bg-zinc-100 text-zinc-700 transition-all"
                 >
@@ -1040,7 +1199,10 @@ export default function InterviewerCapturePage() {
                   </span>
                 ) : (
                   <button
-                    onClick={startRecording}
+                    // Wrapped, not passed by reference: startRecording's first parameter is
+                    // now the device prefs, and React would hand it the click event —
+                    // whose micEnabled is undefined, which would restart the recorder muted.
+                    onClick={() => startRecording()}
                     className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold shadow-2xs"
                   >
                     Start Audio Record
@@ -1308,13 +1470,9 @@ export default function InterviewerCapturePage() {
                   <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 space-y-1">
                     <span className="text-[11px] uppercase font-bold text-zinc-500">Candidate Eye & Gaze Motion</span>
                     <div className="flex items-center gap-2 mt-1">
-                      <span className={`w-3 h-3 rounded-full ${isTeleprompterReading ? "bg-purple-600" : isCandidateGazeFocused ? "bg-emerald-500" : "bg-red-500"}`} />
+                      <span className={`w-3 h-3 rounded-full ${GAZE_TONE[candidateGazeStatus].dot}`} />
                       <span className="text-xs font-semibold text-zinc-800">
-                        {isTeleprompterReading
-                          ? "⚠️ Teleprompter Script Reading Detected (Horizontal scanning)"
-                          : isCandidateGazeFocused
-                          ? "🟢 Candidate looking at camera / screen (Focused)"
-                          : "🔴 Candidate gaze turned away from camera (Looking Away)"}
+                        {TELEMETRY_GAZE_LABEL[candidateGazeStatus]}
                       </span>
                     </div>
                   </div>
